@@ -1,4 +1,4 @@
-:root { --brand: #4338ca; --brand-dark: #3730a3; --ink: #0f172a; --muted: #475569; --line: #e2e8f0; --soft: #eef2ff; --amber: #f59e0b; }
+:root { --brand: #4338ca; --brand-dark: #3730a3; --ink: #0f172a; --muted: #475569; --line: #e2e8f0; --soft: #eef2ff; }
 * { box-sizing: border-box; }
 body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: var(--muted); background: #fff; line-height: 1.6; }
 a { color: var(--brand); }
@@ -27,3 +27,4 @@ summary { cursor: pointer; font-weight: 600; color: var(--ink); }
 footer { border-top: 1px solid var(--line); padding: 24px 0; font-size: .9rem; }
 footer .wrap { display: flex; flex-wrap: wrap; gap: 12px; justify-content: space-between; }
 .note { font-size: .85rem; }
+.btn:focus-visible, summary:focus-visible, a:focus-visible { outline: 3px solid var(--brand); outline-offset: 3px; }

@@ -2,8 +2,10 @@
 
 > Briefklar explains German authority letters (immigration office, tax office, health insurance, broadcasting
 > fee) in plain language in German, English, French and Arabic, with the deadline as a calendar file, a checklist
-> and a reply draft. OCR and redaction of personal data run on the server before the text reaches the LLM; nothing
-> is stored. A portfolio project by Omar Fourati with public source code. Not legal advice.
+> and a reply draft. OCR and redaction of personal data run on the server before the text reaches the LLM (with a
+> preview so the user can check it; detection is not perfect). Letters are kept only for processing and deleted
+> immediately afterwards; only user accounts and a daily usage counter are stored. A portfolio project by Omar
+> Fourati with public source code. Not legal advice. When in doubt, ask the authority.
 
 - App and demo (read-only demo account with three example letters): https://briefklar.omarfourati.de/app/login
 - Source code: https://github.com/omarfourati-dev/Briefklar
