@@ -4,13 +4,14 @@ import { firstValueFrom } from 'rxjs';
 import { ApiService } from '../core/api.service';
 import { Explanation, Finding, Preview } from '../core/models';
 import { problemMessage } from '../core/problem';
-import { PLACEHOLDER_EXACT, redactManually, restoreExplanation } from '../lib/redaction';
+import { PLACEHOLDER, PLACEHOLDER_EXACT,redactManually, restoreExplanation } from '../lib/redaction';
 import { ResultView } from '../result/result-view';
 
 type Step = 'input' | 'preview' | 'result';
 type TokenKind = 'mask' | 'server' | 'word' | 'plain';
 interface Token { text: string; kind: TokenKind; value?: string }
-const TOKEN_SPLIT = /(\[[A-Z_]+?_\d+\]|\s+|[.,;:!?()])/;
+// placeholders stay whole; everything else splits into words (letters/digits/marks) and separator runs
+const TOKEN_SPLIT = new RegExp(String.raw`(${PLACEHOLDER.source}|(?:(?!${PLACEHOLDER.source})[^\p{L}\p{N}\p{M}])+)`, 'u');
 const RING = 'focus-within:ring-2 focus-within:ring-brand-700 focus-within:ring-offset-2';
 
 @Component({
@@ -28,7 +29,7 @@ const RING = 'focus-within:ring-2 focus-within:ring-brand-700 focus-within:ring-
             <div class="flex flex-wrap justify-center gap-2">
               <label class="btn btn-secondary cursor-pointer ${RING}">
                 Foto aufnehmen
-                <input type="file" class="sr-only" accept="image/*" capture="environment" (change)="pick($event)" />
+                <input type="file" class="sr-only" accept="image/jpeg,image/png,image/webp" capture="environment" (change)="pick($event)" />
               </label>
               <label class="btn btn-secondary cursor-pointer ${RING}">
                 Datei wählen
@@ -105,7 +106,7 @@ export class LetterPage {
         const value = manualValues.get(t);
         return value === undefined ? { text: t, kind: 'server' } : { text: t, kind: 'mask', value };
       }
-      return { text: t, kind: /\p{L}|\d/u.test(t) ? 'word' : 'plain' };
+      return { text: t, kind: /[\p{L}\p{N}]/u.test(t) ? 'word' : 'plain' };
     });
   });
 

@@ -133,12 +133,42 @@ describe('LetterPage', () => {
     expect(el.querySelector('bk-result')).toBeNull();
   });
 
+  async function hideAll(text: string, words: string[]) {
+    const ctx = await toPreview(text, text);
+    for (const w of words) ctx.click((s) => s.textContent === w && s.hasAttribute('data-word'));
+    (ctx.el.querySelector('[data-testid=explain]') as HTMLButtonElement).click();
+    const body: string = ctx.http.expectOne('/api/letters/explain').request.body.text;
+    expect(body).toBe(ctx.shown());
+    return body;
+  }
+
+  it('can hide every part of a hyphenated name', async () => {
+    const body = await hideAll('Frau Okafor und Frau Müller-Okafor', ['Okafor', 'Müller']);
+    expect(body).not.toContain('Okafor');
+    expect(body).not.toContain('Müller');
+    expect(body).toBe('Frau [MANUELL_1] und Frau [MANUELL_2]-[MANUELL_1]');
+  });
+
+  it('can hide words separated by a slash', async () => {
+    const body = await hideAll('Okafor/Benali melden sich', ['Okafor', 'Benali']);
+    expect(body).not.toContain('Benali');
+    expect(body).not.toContain('Okafor');
+  });
+
+  it('handles Arabic-Indic digits and decomposed umlauts', async () => {
+    const decomposed = 'Müller';
+    const body = await hideAll(`Betrag ٥٠ EUR an ${decomposed} und Müllers`, ['٥٠', decomposed]);
+    expect(body).not.toContain('٥٠');
+    expect(body).not.toContain(decomposed);
+    expect(body).toContain('Müllers');
+  });
+
   it('offers a camera input and a file input', () => {
     const fixture = TestBed.createComponent(LetterPage);
     fixture.detectChanges();
     const inputs = [...(fixture.nativeElement as HTMLElement).querySelectorAll('input[type=file]')];
     expect(inputs.map((i) => i.getAttribute('capture'))).toEqual(['environment', null]);
-    expect(inputs[0].getAttribute('accept')).toBe('image/*');
+    expect(inputs[0].getAttribute('accept')).toBe('image/jpeg,image/png,image/webp');
     expect(inputs[1].getAttribute('accept')).toBe('image/jpeg,image/png,image/webp,application/pdf');
   });
 });

@@ -1,9 +1,9 @@
 import { Explanation, Finding, Texts } from '../core/models';
 
-/** Matches exactly one placeholder (non-global, anchored). */
-export const PLACEHOLDER_EXACT = /^\[[A-Z_]+?_\d+\]$/;
 /** Matches placeholders anywhere in a text (global; use with replace/split/match only). */
 export const PLACEHOLDER = /\[[A-Z_]+?_\d+\]/g;
+/** Matches exactly one placeholder (non-global, anchored). */
+export const PLACEHOLDER_EXACT = new RegExp(`^${PLACEHOLDER.source}$`);
 
 export function restore(text: string, findings: Finding[]): string {
   const values = new Map(findings.map((f) => [f.placeholder, f.value]));
@@ -40,7 +40,7 @@ export function redactManually(text: string, words: string[]): { text: string; f
     const parts = out.split(PLACEHOLDER);
     const holders = out.match(PLACEHOLDER) ?? [];
     // a word only matches as a whole word: neighbours must not be letters or digits
-    const re = new RegExp(String.raw`(?<![\p{L}\d])${escapeRegExp(word)}(?![\p{L}\d])`, 'gu');
+    const re = new RegExp(String.raw`(?<![\p{L}\p{N}\p{M}])${escapeRegExp(word)}(?![\p{L}\p{N}\p{M}])`, 'gu');
     if (!parts.some((p) => new RegExp(re.source, 'u').test(p))) continue;
     const placeholder = `[MANUELL_${++next}]`;
     findings.push({ placeholder, kind: 'MANUELL', value: word });
