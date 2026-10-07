@@ -106,7 +106,7 @@ var rules = []rule{
 	{kind: Phone, re: regexp.MustCompile(`(?i)\b(?:telefon(?:nummer|-nr\.?)?|tel(?:\.-?nr\.?|\.)?|rufnummer|mobil(?:nummer)?|handy(?:nummer)?|fax)` + label + `(\+?\d[\d /()-]{5,}\d)`), group: 1},
 	{kind: Phone, re: regexp.MustCompile(`\+49[\d /()-]{6,}\d`)},
 	{kind: Reference, re: regexp.MustCompile(`(?i)\b(?:aktenzeichen|az\.|gesch(?:ä|ae)ftszeichen|unser zeichen|ihr zeichen|kundennummer|kunden-nr\.?|beitragsnummer|kassenzeichen|vorgangsnummer|versichertennummer|versicherungsnummer|mitgliedsnummer|bg-nummer|antragsnummer)` +
-		label + `([A-Za-z0-9./-]*\d[A-Za-z0-9./-]*(?: [A-Za-z0-9./-]*\d[A-Za-z0-9./-]*)*)`), group: 1},
+		label + `([A-Za-z0-9./-]*\d[A-Za-z0-9./-]*(?: (?:[A-Za-z] )?[A-Za-z0-9./-]*\d[A-Za-z0-9./-]*)*)`), group: 1},
 	// "Hauptstraße 12", "Hauptstr.12" – but not "Arbeitsweg 12 km"
 	{kind: Street, re: regexp.MustCompile(`\p{Lu}[\p{L}-]*` + streetEnd + `[ \t]?` + houseNo + streetUnit), valid: noUnit},
 	// "Kölner Straße 12", "Berliner Platz 3"
@@ -130,16 +130,68 @@ var nameStop = map[string]bool{"Sie": true, "Ihr": true, "Ihre": true, "Ihren": 
 	"Die": true, "Das": true, "Und": true, "Wir": true, "Er": true, "Es": true, "Bitte": true,
 	"Mit": true, "Am": true, "Im": true, "In": true, "An": true, "Auf": true, "Für": true}
 
+// articles after "von" mean an institution follows ("Frau Schmidt von der Ausländerbehörde"), not a name part.
+var articles = map[string]bool{"der": true, "den": true, "dem": true, "des": true, "vom": true, "zum": true, "zur": true}
+
 // cleanName cuts the value at the first word that cannot belong to a name.
 func cleanName(v string) string {
+	words := strings.Fields(v)
 	var keep []string
-	for _, w := range strings.Fields(v) {
-		if nameStop[w] {
+	for i, w := range words {
+		if nameStop[w] || (w == "von" && i+1 < len(words) && articles[words[i+1]]) {
 			break
 		}
 		keep = append(keep, w)
 	}
 	return strings.Join(keep, " ")
+}
+
+var (
+	addrName = regexp.MustCompile(`^` + title + `(` + initials + nameWord + `(?: ` + particleAny + `*` + nameWord + `){1,3})$`)
+	// authorityWord marks a sender line ("Finanzamt Musterstadt", "Muster Service GmbH") that is not a person.
+	authorityWord = regexp.MustCompile(`(?i)amt|behörde|landkreis|stadt|kasse|service|gericht|agentur|jobcenter|^bundes|^landes|^kreis|^gmbh$|^ag$|^e\.v\.$`)
+	salutation    = map[string]bool{"Herrn": true, "Herr": true, "Frau": true, "Familie": true}
+)
+
+// fullMatch tells whether re matches the whole line (and the value passes valid, if set).
+func fullMatch(r rule, line string) bool {
+	m := r.re.FindString(line)
+	return m == line && (r.valid == nil || r.valid(m))
+}
+
+// addressNames finds recipient names without "Herrn"/"Frau": a line of 2–4 name words directly above a
+// street line that is followed by a postcode line. Lines with authority words are senders, not persons.
+func addressNames(text string) []string {
+	lines := strings.Split(text, "\n")
+	for i := range lines {
+		lines[i] = strings.TrimSpace(lines[i])
+	}
+	var names []string
+	for i := 0; i+2 < len(lines); i++ {
+		m := addrName.FindStringSubmatch(lines[i])
+		if m == nil {
+			continue
+		}
+		person := true
+		for _, w := range strings.Fields(lines[i]) {
+			if authorityWord.MatchString(w) || salutation[w] || nameStop[w] {
+				person = false
+				break
+			}
+		}
+		if !person {
+			continue
+		}
+		street, place := false, false
+		for _, r := range rules {
+			street = street || (r.kind == Street && fullMatch(r, lines[i+1]))
+			place = place || (r.kind == Place && fullMatch(r, lines[i+2]))
+		}
+		if street && place {
+			names = append(names, m[1])
+		}
+	}
+	return names
 }
 
 // isNamePart tells whether a word of a full name is worth redacting on its own (not particles, not initials).
@@ -202,6 +254,15 @@ func Redact(text string) Result {
 		seen[v] = true
 		hits = append(hits, hit{k, v})
 	}
+	addName := func(v string) {
+		add(Name, v)
+		// "Herr Benali" later in the text must disappear as well
+		for _, part := range strings.Fields(v) {
+			if isNamePart(part) {
+				add(Name, part)
+			}
+		}
+	}
 	for _, r := range rules {
 		for _, m := range r.re.FindAllStringSubmatch(text, -1) {
 			v := m[r.group]
@@ -211,16 +272,15 @@ func Redact(text string) Result {
 			if r.valid != nil && !r.valid(v) {
 				continue
 			}
-			add(r.kind, v)
 			if r.kind == Name {
-				// "Herr Benali" later in the text must disappear as well
-				for _, part := range strings.Fields(v) {
-					if isNamePart(part) {
-						add(Name, part)
-					}
-				}
+				addName(v)
+			} else {
+				add(r.kind, v)
 			}
 		}
+	}
+	for _, v := range addressNames(text) {
+		addName(v)
 	}
 
 	// Text outside already existing placeholders may be changed; the placeholders themselves never.

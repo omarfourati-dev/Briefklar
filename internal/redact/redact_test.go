@@ -56,6 +56,50 @@ func TestKeepsDeadlinesAndAuthority(t *testing.T) {
 			t.Errorf("%q must stay readable for the LLM", v)
 		}
 	}
+	// "von der" ends a name in running text; the authority must not become a name part.
+	r = Redact("Landkreis Oberberg – Ausländerbehörde\nMoltkestraße 42, 51643 Gummersbach\n\n" +
+		"Frau Schmidt von der Ausländerbehörde hat Ihren Antrag geprüft. Ihre Ausländerbehörde")
+	if strings.Contains(r.Text, "Schmidt") {
+		t.Errorf("Schmidt still in %q", r.Text)
+	}
+	if n := strings.Count(r.Text, "Ausländerbehörde"); n != 3 {
+		t.Errorf("Ausländerbehörde appears %d times (want 3) in %q", n, r.Text)
+	}
+	if !strings.Contains(r.Text, "Landkreis Oberberg – Ausländerbehörde") {
+		t.Errorf("letterhead changed: %q", r.Text)
+	}
+}
+
+func TestAddressBlockWithoutSalutation(t *testing.T) {
+	r := Redact("Karim Benali\nLindenweg 7\n51645 Gummersbach\n\nIhr Antrag vom 01.10.2026")
+	for _, h := range []string{"Karim", "Benali", "Lindenweg 7", "51645 Gummersbach"} {
+		if strings.Contains(r.Text, h) {
+			t.Errorf("%q still in %q", h, r.Text)
+		}
+	}
+	assertFindingsInText(t, r)
+	r = Redact("Dr. Anna Lang\r\nAm Markt 4\r\n51643 Gummersbach\r\n")
+	if strings.Contains(r.Text, "Anna") || strings.Contains(r.Text, "Lang") {
+		t.Errorf("name with title still in %q", r.Text)
+	}
+	for _, in := range []string{
+		"Finanzamt Musterstadt\nHauptstraße 12\n12345 Musterstadt",
+		"Jobcenter Oberberg\nMoltkestraße 42\n51643 Gummersbach",
+		"Landkreis Oberberg\nMoltkestraße 42\n51643 Gummersbach",
+		"Familienkasse Nordrhein-Westfalen\nHauptstraße 12\n12345 Musterstadt",
+		"Muster Service GmbH\nHauptstraße 12\n12345 Musterstadt",
+	} {
+		first := strings.SplitN(in, "\n", 2)[0]
+		if r := Redact(in); !strings.Contains(r.Text, first) {
+			t.Errorf("authority %q redacted: %q", first, r.Text)
+		}
+	}
+	// only a real address block (name line, street, place) triggers the rule
+	for _, in := range []string{"Karim Benali\nLindenweg 7\nIhr Antrag", "Karim Benali\n51645 Gummersbach"} {
+		if r := Redact(in); !strings.Contains(r.Text, "Karim Benali") {
+			t.Errorf("not an address block, but redacted: %q", r.Text)
+		}
+	}
 }
 
 func TestSameValueGetsSamePlaceholder(t *testing.T) {
@@ -202,6 +246,8 @@ func TestLabelsAndStreets(t *testing.T) {
 		{"Steuer-Nr.: 212/5678/9012", "212/5678/9012"},
 		{"St.-Nr. 212/5678/9012", "212/5678/9012"},
 		{"Versicherungsnummer: 12345678A", "12345678A"},
+		{"Versicherungsnummer: 12 345678 B 901", "B 901"},
+		{"Versicherungsnummer: 12 345678 B 901\nIhr Antrag", "901"},
 		{"Kunden-Nr.: 4711-22", "4711-22"},
 		{"BG-Nummer: 12/345", "12/345"},
 		{"Antragsnummer: AN-2026-0815", "AN-2026-0815"},
