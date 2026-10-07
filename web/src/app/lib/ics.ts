@@ -1,5 +1,8 @@
+import { isValidDate } from './urgency';
+
 /** Builds an iCalendar file in the browser – the deadline never goes back to the server. */
 export function buildIcs(o: { title: string; date: string; description: string; now?: Date; uid?: string }): string {
+  if (!isValidDate(o.date)) throw new Error('Ungültiges Datum');
   const [y, m, d] = o.date.split('-').map(Number);
   const start = new Date(Date.UTC(y, m - 1, d));
   const end = new Date(start.getTime() + 24 * 60 * 60 * 1000);
@@ -22,7 +25,7 @@ export function buildIcs(o: { title: string; date: string; description: string; 
 }
 
 function escape(s: string): string {
-  return s.replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\r?\n/g, '\\n');
+  return s.replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\r\n|\r|\n/g, '\\n');
 }
 
 // RFC 5545 §3.1: lines longer than 75 octets continue on the next line, starting with a space.

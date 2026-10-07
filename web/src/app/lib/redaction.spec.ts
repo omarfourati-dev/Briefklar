@@ -33,4 +33,29 @@ describe('redaction helpers', () => {
     expect(r.replyDraft).toBe('Gruß Karim');
     expect(r.missingInfo[0]).toBe('Karim?');
   });
+
+  it('restores in a single pass', () => {
+    const f = [
+      { placeholder: '[NAME_1]', kind: 'NAME', value: 'Anna' },
+      { placeholder: '[NAME_10]', kind: 'NAME', value: 'Zoe' },
+    ];
+    expect(restore('[NAME_1] und [NAME_10]', f)).toBe('Anna und Zoe');
+    const g = [
+      { placeholder: '[NAME_1]', kind: 'NAME', value: '[NAME_2]' },
+      { placeholder: '[NAME_2]', kind: 'NAME', value: 'Bob' },
+    ];
+    expect(restore('[NAME_1]', g)).toBe('[NAME_2]');
+  });
+
+  it('never touches placeholders through partial words', () => {
+    for (const w of ['NAME_1', '_1', 'NAME']) {
+      expect(redactManually('Sehr geehrte [NAME_1]', [w]).text).toBe('Sehr geehrte [NAME_1]');
+    }
+  });
+
+  it('redacts longest words first', () => {
+    const r = redactManually('Herr Okafor und Okafor', ['Okafor', 'Herr Okafor']);
+    expect(r.text).toBe('[MANUELL_1] und [MANUELL_2]');
+    expect(r.findings.map((x) => x.value)).toEqual(['Herr Okafor', 'Okafor']);
+  });
 });

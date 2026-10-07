@@ -3,7 +3,8 @@ import { Explanation, Finding, Texts } from '../core/models';
 const PLACEHOLDER = /\[[A-Z_]+?_\d+\]/g;
 
 export function restore(text: string, findings: Finding[]): string {
-  return findings.reduce((t, f) => t.split(f.placeholder).join(f.value), text);
+  const values = new Map(findings.map((f) => [f.placeholder, f.value]));
+  return text.replace(PLACEHOLDER, (m) => values.get(m) ?? m);
 }
 
 export function restoreExplanation(e: Explanation, findings: Finding[]): Explanation {
