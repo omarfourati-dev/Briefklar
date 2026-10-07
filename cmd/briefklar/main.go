@@ -93,6 +93,12 @@ func run(log *slog.Logger) error {
 	if cfg.Explainer == "openai" {
 		explainer = &explain.OpenAI{HTTP: &http.Client{}, BaseURL: cfg.OpenAIBaseURL, APIKey: cfg.OpenAIKey, Model: cfg.OpenAIModel, Log: log}
 	}
+	// Letter files of an extraction that was killed (e.g. OOM) must not survive the restart.
+	if n, err := extract.CleanStale(os.TempDir()); err != nil {
+		log.Warn("removing stale temp directories failed", "removed", n, "error", err)
+	} else if n > 0 {
+		log.Info("removed stale temp directories", "removed", n)
+	}
 	log.Info("starting", "addr", cfg.Addr, "explainer", cfg.Explainer, "demo", cfg.DemoEnabled)
 
 	files, err := fs.Sub(static.Files, "dist")

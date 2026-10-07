@@ -19,6 +19,8 @@ import (
 	"strings"
 	"time"
 	"unicode"
+
+	_ "golang.org/x/image/webp"
 )
 
 type Kind string
@@ -32,13 +34,39 @@ const (
 var (
 	ErrUnsupported = errors.New("unsupported file type")
 	ErrNoText      = errors.New("no readable text")
+	// ErrImageTooLarge: the photo has more pixels than we are willing to OCR.
+	ErrImageTooLarge = errors.New("image too large")
 )
+
+const tempPattern = "briefklar-*"
+
+// CleanStale removes temp directories left behind by a process that was killed mid-extraction
+// (e.g. OOM kill), so letter bytes do not survive a restart. It returns the number removed.
+func CleanStale(dir string) (int, error) {
+	matches, err := filepath.Glob(filepath.Join(dir, tempPattern))
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	var errs []error
+	for _, m := range matches {
+		if fi, err := os.Lstat(m); err != nil || !fi.IsDir() {
+			continue
+		}
+		if err := os.RemoveAll(m); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		n++
+	}
+	return n, errors.Join(errs...)
+}
 
 // minLetters: below this the OCR result is noise, not a letter.
 const minLetters = 40
 
 const (
-	maxPixels      = 40_000_000 // decoded size of a photo we are willing to OCR
+	maxPixels      = 25_000_000 // decoded size of a photo we are willing to OCR
 	maxStdout      = 2 << 20
 	maxStderr      = 4 << 10
 	stderrKeep     = 500
@@ -93,13 +121,16 @@ func (t *Tools) Extract(ctx context.Context, data []byte) (string, Kind, error) 
 	if err != nil {
 		return "", "", err
 	}
-	if kind == Image && !(len(data) >= 12 && string(data[8:12]) == "WEBP") {
+	if kind == Image {
 		cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
-		if err != nil || cfg.Width*cfg.Height > maxPixels {
+		if err != nil {
 			return "", kind, ErrUnsupported
 		}
+		if cfg.Width*cfg.Height > maxPixels {
+			return "", kind, ErrImageTooLarge
+		}
 	}
-	dir, err := os.MkdirTemp("", "briefklar-*")
+	dir, err := os.MkdirTemp("", tempPattern)
 	if err != nil {
 		return "", kind, err
 	}

@@ -168,12 +168,62 @@ func pngHeader(w, h uint32) []byte {
 	return b.Bytes()
 }
 
+// webpHeader returns an extended-format (VP8X) WebP header claiming the given canvas size (no image data).
+func webpHeader(w, h uint32) []byte {
+	var b bytes.Buffer
+	b.WriteString("RIFF")
+	_ = binary.Write(&b, binary.LittleEndian, uint32(4+8+10))
+	b.WriteString("WEBPVP8X")
+	_ = binary.Write(&b, binary.LittleEndian, uint32(10))
+	b.Write([]byte{0, 0, 0, 0})
+	b.Write([]byte{byte(w - 1), byte((w - 1) >> 8), byte((w - 1) >> 16)})
+	b.Write([]byte{byte(h - 1), byte((h - 1) >> 8), byte((h - 1) >> 16)})
+	return b.Bytes()
+}
+
 func TestHugeImageIsRejectedBeforeOCR(t *testing.T) {
 	// no needTools: the tools must not even be started
 	tools := &Tools{Tesseract: "/nonexistent/tesseract", PdfToText: "/nonexistent", PdfToPPM: "/nonexistent", MaxPages: 3}
-	_, _, err := tools.Extract(context.Background(), pngHeader(10000, 10000))
-	if !errors.Is(err, ErrUnsupported) {
-		t.Fatalf("err = %v, want ErrUnsupported", err)
+	for name, data := range map[string][]byte{
+		"png 10000x10000":    pngHeader(10000, 10000),
+		"png just over 25MP": pngHeader(5001, 5000),
+		"webp 6000x6000":     webpHeader(6000, 6000),
+	} {
+		_, _, err := tools.Extract(context.Background(), data)
+		if !errors.Is(err, ErrImageTooLarge) {
+			t.Errorf("%s: err = %v, want ErrImageTooLarge", name, err)
+		}
+	}
+	// a broken header is not "too large" but unsupported
+	if _, _, err := tools.Extract(context.Background(), []byte("RIFF\x00\x00\x00\x00WEBPjunk")); !errors.Is(err, ErrUnsupported) {
+		t.Errorf("broken webp: err = %v, want ErrUnsupported", err)
+	}
+}
+
+func TestCleanStale(t *testing.T) {
+	dir := t.TempDir()
+	for _, d := range []string{"briefklar-111", "briefklar-222", "other-333"} {
+		if err := os.MkdirAll(filepath.Join(dir, d), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, d, "in.img"), []byte("letter"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "briefklar-file"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	n, err := CleanStale(dir)
+	if err != nil || n != 2 {
+		t.Fatalf("n=%d err=%v, want 2 removed", n, err)
+	}
+	entries, _ := os.ReadDir(dir)
+	var left []string
+	for _, e := range entries {
+		left = append(left, e.Name())
+	}
+	if strings.Join(left, ",") != "briefklar-file,other-333" {
+		t.Fatalf("left behind: %v", left)
 	}
 }
 
