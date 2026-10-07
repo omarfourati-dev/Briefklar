@@ -100,6 +100,35 @@ func TestAddressBlockWithoutSalutation(t *testing.T) {
 			t.Errorf("not an address block, but redacted: %q", r.Text)
 		}
 	}
+	// surnames that merely contain an authority word are persons
+	for _, c := range []struct{ in, hide string }{
+		{"Max Neustadt\nLindenweg 7\n51645 Gummersbach", "Neustadt"},
+		{"Anna Kassebaum\nLindenweg 7\n51645 Gummersbach", "Kassebaum"},
+	} {
+		if r := Redact(c.in); strings.Contains(r.Text, c.hide) {
+			t.Errorf("%q still in %q", c.hide, r.Text)
+		}
+	}
+}
+
+func TestUnlistedAuthoritiesInAddressBlockStayReadable(t *testing.T) {
+	cases := []struct{ head, street, place, running string }{
+		{"Deutsche Rentenversicherung Bund", "Ruhrstraße 2", "10709 Berlin", "Die Deutsche Rentenversicherung teilt mit."},
+		{"Gemeinde Engelskirchen", "Engelsplatz 4", "51766 Engelskirchen", "Die Gemeinde Engelskirchen teilt mit."},
+		{"Bezirksregierung Köln", "Zeughausstraße 2", "50667 Köln", "Die Bezirksregierung teilt mit."},
+		{"Wohngeldstelle Oberberg", "Moltkestraße 42", "51643 Gummersbach", "Die Wohngeldstelle Oberberg teilt mit."},
+	}
+	for _, c := range cases {
+		r := Redact(c.head + "\n" + c.street + "\n" + c.place + "\n\n" + c.running)
+		if !strings.Contains(r.Text, c.head) || !strings.Contains(r.Text, c.running) {
+			t.Errorf("authority redacted: %q", r.Text)
+		}
+	}
+	// a name found only by the address-block rule is redacted as a whole line, its parts stay untouched elsewhere
+	r := Redact("Ruth Bund\nLindenweg 7\n51645 Gummersbach\n\nDie Rentenversicherung Bund teilt mit.")
+	if strings.Contains(r.Text, "Ruth Bund") || !strings.Contains(r.Text, "Rentenversicherung Bund teilt mit.") {
+		t.Errorf("got %q", r.Text)
+	}
 }
 
 func TestSameValueGetsSamePlaceholder(t *testing.T) {

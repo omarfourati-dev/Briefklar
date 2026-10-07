@@ -36,6 +36,31 @@ describe('image', () => {
     }
   });
 
+  it('paints a white background before drawing (transparent PNG to JPEG) and uploads a scaled JPEG', async () => {
+    const g = globalThis as { createImageBitmap?: unknown };
+    const original = g.createImageBitmap;
+    const calls: string[] = [];
+    const ctx = {
+      fillStyle: '',
+      fillRect: (x: number, y: number, w: number, h: number) => calls.push(`fill ${ctx.fillStyle} ${x},${y},${w},${h}`),
+      drawImage: (_b: unknown, x: number, y: number, w: number, h: number) => calls.push(`draw ${x},${y},${w},${h}`),
+    };
+    const getContext = vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(ctx as never);
+    const toBlob = vi.spyOn(HTMLCanvasElement.prototype, 'toBlob')
+      .mockImplementation((cb: BlobCallback, type?: string) => cb(new Blob(['jpg'], { type })));
+    g.createImageBitmap = () => Promise.resolve({ width: 5000, height: 4000, close: () => undefined });
+    try {
+      const out = await prepareUpload(new File(['x'], 'scan.png', { type: 'image/png' }));
+      expect(calls).toEqual(['fill #ffffff 0,0,2500,2000', 'draw 0,0,2500,2000']);
+      expect(out.type).toBe('image/jpeg');
+      expect(out.name).toBe('scan.jpg');
+    } finally {
+      g.createImageBitmap = original;
+      getContext.mockRestore();
+      toBlob.mockRestore();
+    }
+  });
+
   it('returns the original image when the browser cannot decode it', async () => {
     const original = (globalThis as { createImageBitmap?: unknown }).createImageBitmap;
     (globalThis as { createImageBitmap?: unknown }).createImageBitmap = () => Promise.reject(new Error('decode'));

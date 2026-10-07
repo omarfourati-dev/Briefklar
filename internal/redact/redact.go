@@ -148,10 +148,35 @@ func cleanName(v string) string {
 
 var (
 	addrName = regexp.MustCompile(`^` + title + `(` + initials + nameWord + `(?: ` + particleAny + `*` + nameWord + `){1,3})$`)
-	// authorityWord marks a sender line ("Finanzamt Musterstadt", "Muster Service GmbH") that is not a person.
-	authorityWord = regexp.MustCompile(`(?i)amt|behörde|landkreis|stadt|kasse|service|gericht|agentur|jobcenter|^bundes|^landes|^kreis|^gmbh$|^ag$|^e\.v\.$`)
-	salutation    = map[string]bool{"Herrn": true, "Herr": true, "Frau": true, "Familie": true}
+	salutation = map[string]bool{"Herrn": true, "Herr": true, "Frau": true, "Familie": true}
+
+	// Authority words mark a sender line ("Finanzamt Musterstadt", "Bezirksregierung Köln") that is not a person.
+	// Compared on lower-cased words; anchored so that surnames like "Neustadt" or "Kassebaum" stay persons.
+	authoritySuffix = []string{"amt", "behörde", "kasse", "stelle", "versicherung", "regierung", "verwaltung", "gericht",
+		"agentur", "kammer", "verband", "zentrum", "büro", "präsidium", "ministerium", "polizei", "schule", "universität",
+		"hochschule", "bank", "sparkasse", "service", "kreis"}
+	authorityPrefix = []string{"landkreis", "gemeinde", "bundes", "landes", "kreis", "deutsche"}
+	authorityWhole  = map[string]bool{"stadt": true, "jobcenter": true, "rathaus": true, "gmbh": true, "ag": true,
+		"e.v.": true, "kg": true, "mbh": true}
 )
+
+func isAuthorityWord(w string) bool {
+	w = strings.ToLower(w)
+	if authorityWhole[w] {
+		return true
+	}
+	for _, s := range authoritySuffix {
+		if strings.HasSuffix(w, s) {
+			return true
+		}
+	}
+	for _, p := range authorityPrefix {
+		if strings.HasPrefix(w, p) {
+			return true
+		}
+	}
+	return false
+}
 
 // fullMatch tells whether re matches the whole line (and the value passes valid, if set).
 func fullMatch(r rule, line string) bool {
@@ -174,7 +199,7 @@ func addressNames(text string) []string {
 		}
 		person := true
 		for _, w := range strings.Fields(lines[i]) {
-			if authorityWord.MatchString(w) || salutation[w] || nameStop[w] {
+			if isAuthorityWord(w) || salutation[w] || nameStop[w] {
 				person = false
 				break
 			}
@@ -279,8 +304,9 @@ func Redact(text string) Result {
 			}
 		}
 	}
+	// Only the whole line: an unknown authority that slipped through must not lose its words text-wide.
 	for _, v := range addressNames(text) {
-		addName(v)
+		add(Name, v)
 	}
 
 	// Text outside already existing placeholders may be changed; the placeholders themselves never.

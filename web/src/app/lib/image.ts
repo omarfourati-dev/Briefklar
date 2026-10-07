@@ -25,7 +25,10 @@ export async function prepareUpload(file: File): Promise<File> {
     const canvas = document.createElement('canvas');
     canvas.width = width;
     canvas.height = height;
-    canvas.getContext('2d')!.drawImage(bitmap, 0, 0, width, height);
+    const ctx = canvas.getContext('2d')!;
+    ctx.fillStyle = '#ffffff'; // JPEG has no alpha: transparent PNG areas would turn black
+    ctx.fillRect(0, 0, width, height);
+    ctx.drawImage(bitmap, 0, 0, width, height);
     bitmap.close();
     const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/jpeg', JPEG_QUALITY));
     if (!blob) return file;
