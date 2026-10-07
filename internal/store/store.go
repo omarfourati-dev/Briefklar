@@ -60,44 +60,52 @@ func (s *Store) Close()                         { s.pool.Close() }
 func (s *Store) Ping(ctx context.Context) error { return s.pool.Ping(ctx) }
 
 func (s *Store) migrate(ctx context.Context) error {
-	if _, err := s.pool.Exec(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (version INT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())`); err != nil {
-		return err
-	}
 	names, err := fs.Glob(migrations, "migrations/*.sql")
 	if err != nil {
 		return err
 	}
 	sort.Strings(names)
-	for _, name := range names {
-		version, err := strconv.Atoi(strings.SplitN(strings.TrimPrefix(name, "migrations/"), "_", 2)[0])
-		if err != nil {
-			return fmt.Errorf("migration %s: %w", name, err)
-		}
-		sql, err := migrations.ReadFile(name)
-		if err != nil {
+	// One transaction holds the advisory lock for the bootstrap and all migrations, so two
+	// starting containers never create schema_migrations or the tables at the same time.
+	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(4711)`); err != nil {
 			return err
 		}
-		err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-			// the advisory lock keeps two starting containers from migrating at the same time
-			if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(4711)`); err != nil {
-				return err
+		if _, err := tx.Exec(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (version INT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())`); err != nil {
+			return err
+		}
+		for _, name := range names {
+			version, err := strconv.Atoi(strings.SplitN(strings.TrimPrefix(name, "migrations/"), "_", 2)[0])
+			if err != nil {
+				return fmt.Errorf("migration %s: %w", name, err)
 			}
 			var done bool
-			if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = $1)`, version).Scan(&done); err != nil || done {
+			if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = $1)`, version).Scan(&done); err != nil {
+				return err
+			}
+			if done {
+				continue
+			}
+			sql, err := migrations.ReadFile(name)
+			if err != nil {
 				return err
 			}
 			// simple protocol: a migration file may contain several statements
 			if _, err := tx.Conn().PgConn().Exec(ctx, string(sql)).ReadAll(); err != nil {
-				return err
+				return fmt.Errorf("migration %s: %w", name, err)
 			}
-			_, err := tx.Exec(ctx, `INSERT INTO schema_migrations (version) VALUES ($1)`, version)
-			return err
-		})
-		if err != nil {
-			return fmt.Errorf("migration %s: %w", name, err)
+			if _, err := tx.Exec(ctx, `INSERT INTO schema_migrations (version) VALUES ($1)`, version); err != nil {
+				return fmt.Errorf("migration %s: %w", name, err)
+			}
 		}
-	}
-	return nil
+		return nil
+	})
+}
+
+// isInvalidUUID reports Postgres' "invalid input syntax" error for a malformed id.
+func isInvalidUUID(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "22P02"
 }
 
 const userCols = `id::text, email, password_hash, display_name, role, enabled, daily_limit, created_at`
@@ -132,6 +140,7 @@ func (s *Store) UserByID(ctx context.Context, id string) (User, error) {
 	return scanUser(s.pool.QueryRow(ctx, `SELECT `+userCols+` FROM app_user WHERE id = $1::uuid`, id))
 }
 
+// ListUsers returns all users with their usage for day, interpreted as the calendar date in its own location.
 func (s *Store) ListUsers(ctx context.Context, day time.Time) ([]User, error) {
 	rows, err := s.pool.Query(ctx, `SELECT a.id::text, a.email, a.password_hash, a.display_name, a.role, a.enabled,
 	        a.daily_limit, a.created_at, COALESCE(u.count, 0)
@@ -160,7 +169,7 @@ func (s *Store) SetEnabled(ctx context.Context, id string, enabled bool) (User, 
 
 func (s *Store) SetPassword(ctx context.Context, id, hash string) error {
 	tag, err := s.pool.Exec(ctx, `UPDATE app_user SET password_hash = $2 WHERE id = $1::uuid`, id, hash)
-	if err == nil && tag.RowsAffected() == 0 {
+	if isInvalidUUID(err) || (err == nil && tag.RowsAffected() == 0) {
 		return ErrNotFound
 	}
 	return err
@@ -175,7 +184,10 @@ func (s *Store) IsActive(ctx context.Context, id string) (bool, error) {
 	return err == nil && u.Enabled, err
 }
 
-// TakeQuota counts one explanation for the day. It refuses atomically once daily_limit is reached.
+// TakeQuota counts one explanation for the day. It refuses atomically once daily_limit is reached;
+// an unknown or malformed userID is refused too (0, false, nil).
+// day is interpreted as the calendar date in its own location (the app passes Europe/Berlin dates).
+// It does not check enabled: callers authenticate the user first.
 func (s *Store) TakeQuota(ctx context.Context, userID string, day time.Time) (int, bool, error) {
 	var used int
 	err := s.pool.QueryRow(ctx, `
@@ -184,7 +196,7 @@ func (s *Store) TakeQuota(ctx context.Context, userID string, day time.Time) (in
 		ON CONFLICT (user_id, day) DO UPDATE SET count = usage_day.count + 1
 		 WHERE usage_day.count < (SELECT daily_limit FROM app_user WHERE id = $1::uuid)
 		RETURNING count`, userID, day.Format("2006-01-02")).Scan(&used)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, pgx.ErrNoRows) || isInvalidUUID(err) {
 		return 0, false, nil
 	}
 	if err != nil {

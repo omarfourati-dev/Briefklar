@@ -3,7 +3,10 @@ package store
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"os"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -23,9 +26,120 @@ func open(t *testing.T) *Store {
 	return s
 }
 
+func migrationRows(t *testing.T, s *Store) (rows, files int) {
+	t.Helper()
+	if err := s.pool.QueryRow(context.Background(), `SELECT count(*) FROM schema_migrations`).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	names, err := fs.Glob(migrations, "migrations/*.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rows, len(names)
+}
+
 func TestMigrationsRunTwice(t *testing.T) {
 	open(t)
-	open(t) // second start must not fail on existing tables
+	s := open(t) // second start must not fail on existing tables
+	if rows, files := migrationRows(t, s); rows != files {
+		t.Fatalf("schema_migrations rows=%d, migration files=%d", rows, files)
+	}
+	var tables int
+	err := s.pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM information_schema.tables WHERE table_name IN ('app_user', 'usage_day')`).Scan(&tables)
+	if err != nil || tables != 2 {
+		t.Fatalf("tables=%d err=%v", tables, err)
+	}
+}
+
+func TestInvalidAndUnknownIDs(t *testing.T) {
+	ctx := context.Background()
+	s := open(t)
+	day := time.Date(2026, 10, 7, 0, 0, 0, 0, time.UTC)
+	unknown := "00000000-0000-0000-0000-000000000000"
+
+	if err := s.SetPassword(ctx, "not-a-uuid", "x"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("SetPassword bad id: %v", err)
+	}
+	if used, ok, err := s.TakeQuota(ctx, "not-a-uuid", day); used != 0 || ok || err != nil {
+		t.Fatalf("TakeQuota bad id: used=%d ok=%v err=%v", used, ok, err)
+	}
+	if err := s.SetPassword(ctx, unknown, "x"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("SetPassword unknown id: %v", err)
+	}
+	if _, err := s.SetEnabled(ctx, unknown, true); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("SetEnabled unknown id: %v", err)
+	}
+	if _, err := s.SetEnabled(ctx, "not-a-uuid", true); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("SetEnabled bad id: %v", err)
+	}
+	if used, ok, err := s.TakeQuota(ctx, unknown, day); used != 0 || ok || err != nil {
+		t.Fatalf("TakeQuota unknown id: used=%d ok=%v err=%v", used, ok, err)
+	}
+}
+
+func TestConcurrentFirstStart(t *testing.T) {
+	ctx := context.Background()
+	s := open(t)
+	if _, err := s.pool.Exec(ctx, `DROP TABLE IF EXISTS usage_day, app_user, schema_migrations`); err != nil {
+		t.Fatal(err)
+	}
+	const n = 4
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			st, err := Open(ctx, testdb.URL)
+			if err == nil {
+				st.Close()
+			}
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent Open: %v", err)
+		}
+	}
+	if rows, files := migrationRows(t, s); rows != files {
+		t.Fatalf("schema_migrations rows=%d, migration files=%d", rows, files)
+	}
+}
+
+func TestQuotaIsAtomic(t *testing.T) {
+	ctx := context.Background()
+	s := open(t)
+	u, err := s.CreateUser(ctx, "atomic@x.de", "h", "A", "user", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	day := time.Date(2026, 10, 7, 0, 0, 0, 0, time.UTC)
+	var granted atomic.Int32
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, ok, err := s.TakeQuota(ctx, u.ID, day); err != nil {
+				t.Error(err)
+			} else if ok {
+				granted.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	if granted.Load() != 5 {
+		t.Fatalf("granted %d, want 5", granted.Load())
+	}
+	var count int
+	err = s.pool.QueryRow(ctx, `SELECT count FROM usage_day WHERE user_id = $1::uuid`, u.ID).Scan(&count)
+	if err != nil || count != 5 {
+		t.Fatalf("usage_day.count=%d err=%v", count, err)
+	}
 }
 
 func TestUsers(t *testing.T) {
