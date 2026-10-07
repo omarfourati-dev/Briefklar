@@ -1,11 +1,12 @@
 import { Explanation } from '../core/models';
 
-export interface Example { id: string; title: string; letter: string; explanation: Explanation; }
+export interface Example { id: string; title: string; referenceDate: string; letter: string; explanation: Explanation; }
 
 export const EXAMPLES: Example[] = [
   {
     id: 'auslaenderbehoerde',
     title: 'Ausländerbehörde: Verlängerung des Aufenthaltstitels',
+    referenceDate: '2026-10-07',
     letter: `Landkreis Musterland – Ausländerbehörde
 Herrn Max Beispiel, Musterweg 1, 12345 Musterstadt
 
@@ -40,6 +41,7 @@ Die Gebühr beträgt 93,00 Euro.`,
   {
     id: 'finanzamt',
     title: 'Finanzamt: Belege für die Steuererklärung',
+    referenceDate: '2026-10-07',
     letter: `Finanzamt Musterstadt
 Einkommensteuer 2025 – Steuernummer 123/456/78901
 Sehr geehrter Herr Beispiel,
@@ -70,6 +72,7 @@ zum 30.10.2026 ein. Ohne Nachweise kann ich die Kosten nicht berücksichtigen.`,
   {
     id: 'rundfunkbeitrag',
     title: 'Rundfunkbeitrag: Zahlungserinnerung',
+    referenceDate: '2026-10-07',
     letter: `ARD ZDF Deutschlandradio Beitragsservice
 Beitragsnummer 123 456 789
 Zahlungserinnerung
@@ -92,7 +95,7 @@ für den ein Säumniszuschlag von 8,00 Euro anfällt.`,
         { de: '55,08 € mit Beitragsnummer als Verwendungszweck überweisen', en: 'Transfer €55.08 with your contribution number as reference', fr: 'Virer 55,08 € avec le numéro de cotisation en référence', ar: 'حوّل 55٫08 يورو واذكر رقم الاشتراك في سبب الدفع' },
         { de: 'Lastschrift einrichten, damit es nicht wieder passiert', en: 'Set up direct debit so it does not happen again', fr: 'Mettre en place un prélèvement automatique', ar: 'فعّل الخصم المباشر حتى لا يتكرر ذلك' },
       ],
-      replyDraft: 'Sehr geehrte Damen und Herren,\n\nden offenen Betrag von 55,08 Euro (Beitragsnummer 123 456 789) habe ich heute überwiesen. Bitte erteilen Sie mir künftig ein SEPA-Lastschriftmandat-Formular.\n\nMit freundlichen Grüßen\nMax Beispiel',
+      replyDraft: 'Sehr geehrte Damen und Herren,\n\nden offenen Betrag von 55,08 Euro (Beitragsnummer 123 456 789) habe ich heute überwiesen. Bitte senden Sie mir künftig ein SEPA-Lastschriftmandat zu.\n\nMit freundlichen Grüßen\nMax Beispiel',
       missingInfo: [],
     },
   },

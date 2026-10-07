@@ -18,13 +18,20 @@ describe('ResultView', () => {
     (el.querySelector('button[data-lang=ar]') as HTMLButtonElement).click();
     fixture.detectChanges();
     const summary = el.querySelector('[data-testid=summary]')!;
+    const actions = el.querySelector('[data-testid=actions]')!;
     expect(summary.getAttribute('dir')).toBe('rtl');
+    expect(summary.getAttribute('lang')).toBe('ar');
+    expect(actions.getAttribute('dir')).toBe('rtl');
+    expect(actions.getAttribute('lang')).toBe('ar');
+    expect(el.querySelector('button[data-lang=ar]')!.getAttribute('lang')).toBe('ar');
+    expect(el.querySelector('button[data-lang=ar]')!.getAttribute('aria-pressed')).toBe('true');
     expect(summary.textContent).toContain('إقامتك');
   });
 
   it('shows the deadline, the disclaimer and the reply draft', () => {
     const el: HTMLElement = render().nativeElement;
     expect(el.textContent).toContain('15.11.2026');
+    expect(el.textContent).toContain('noch 39 Tage');
     expect(el.textContent).toContain('Keine Rechtsberatung');
     expect((el.querySelector('textarea') as HTMLTextAreaElement).value).toContain('Max Beispiel');
   });
@@ -37,5 +44,17 @@ describe('ResultView', () => {
     const el: HTMLElement = fixture.nativeElement;
     expect(el.textContent).not.toContain('In den Kalender');
     expect(el.textContent).not.toContain(EXAMPLES[0].explanation.deadlineText);
+  });
+
+  it('resets the ticked actions when the explanation changes', () => {
+    const fixture = render();
+    const el: HTMLElement = fixture.nativeElement;
+    const box = () => el.querySelector('input[type=checkbox]') as HTMLInputElement;
+    box().click();
+    fixture.detectChanges();
+    expect(box().checked).toBe(true);
+    fixture.componentRef.setInput('explanation', EXAMPLES[1].explanation);
+    fixture.detectChanges();
+    expect(box().checked).toBe(false);
   });
 });

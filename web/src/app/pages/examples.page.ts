@@ -10,7 +10,7 @@ import { ResultView } from '../result/result-view';
     <p class="mt-1 text-slate-600">Erfundene Briefe mit fertiger Erklärung – so sieht ein Ergebnis aus.</p>
     <div class="mt-6 grid gap-3 md:grid-cols-3">
       @for (ex of examples; track ex.id) {
-        <button type="button" class="card p-4 text-left hover:border-brand-600" [class.border-brand-600]="selected()?.id === ex.id" (click)="selected.set(ex)">
+        <button type="button" class="card p-4 text-left hover:border-brand-600" [class.border-brand-600]="selected()?.id === ex.id" [attr.aria-pressed]="selected()?.id === ex.id" (click)="selected.set(ex)">
           <span class="font-medium">{{ ex.title }}</span>
         </button>
       }
@@ -21,7 +21,10 @@ import { ResultView } from '../result/result-view';
           <h2 class="font-semibold">Der Brief</h2>
           <pre class="mt-3 text-sm whitespace-pre-wrap text-slate-700">{{ ex.letter }}</pre>
         </section>
-        <bk-result [explanation]="ex.explanation" />
+        <div>
+          <p class="mb-3 text-xs text-slate-500">Beispiel – Fristen bezogen auf das Briefdatum</p>
+          <bk-result [explanation]="ex.explanation" [today]="refDate(ex)" />
+        </div>
       </div>
     }
   `,
@@ -29,4 +32,9 @@ import { ResultView } from '../result/result-view';
 export class ExamplesPage {
   protected readonly examples = EXAMPLES;
   protected readonly selected = signal<Example | null>(null);
+
+  protected refDate(ex: Example): Date {
+    const [y, m, d] = ex.referenceDate.split('-').map(Number);
+    return new Date(y, m - 1, d, 12);
+  }
 }

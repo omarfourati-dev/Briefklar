@@ -18,6 +18,7 @@ import { AuthStore } from './core/auth.store';
       </nav>
     </header>
     <main class="mx-auto max-w-6xl px-4 py-8"><router-outlet /></main>
+    <footer class="mx-auto max-w-6xl px-4 pb-8 text-xs text-slate-500">Keine Rechtsberatung. Im Zweifel bei der Behörde nachfragen.</footer>
   `,
 })
 export class Shell {

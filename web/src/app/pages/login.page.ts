@@ -1,4 +1,4 @@
-import { Component, inject, signal } from '@angular/core';
+import { Component, inject, OnInit, signal } from '@angular/core';
 import { FormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
 import { Router } from '@angular/router';
 import { firstValueFrom } from 'rxjs';
@@ -24,13 +24,15 @@ const DEMO = { email: 'demo@briefklar.app', password: 'demo-briefklar' };
       <div class="card mt-4 p-4 text-sm text-slate-600">
         <p class="font-medium text-slate-800">Demo ansehen</p>
         <p class="mt-1">Drei Beispielbriefe mit fertiger Erklärung, ohne eigenes Konto.</p>
+        <p class="mt-2">E-Mail: demo&#64;briefklar.app · Passwort: demo-briefklar</p>
         <button type="button" class="btn btn-secondary mt-3 w-full" [disabled]="busy()" (click)="demo()">Als Demo anmelden</button>
         <p class="mt-3">Kein Konto? <a class="font-medium text-brand-700" href="mailto:info@omarfourati.de?subject=Briefklar%20%E2%80%93%20Zugang%20anfragen">Zugang anfragen</a></p>
       </div>
+      <p class="mt-6 text-xs text-slate-500">Keine Rechtsberatung. Im Zweifel bei der Behörde nachfragen.</p>
     </div>
   `,
 })
-export class LoginPage {
+export class LoginPage implements OnInit {
   private readonly api = inject(ApiService);
   private readonly auth = inject(AuthStore);
   private readonly router = inject(Router);
@@ -40,6 +42,10 @@ export class LoginPage {
     email: ['', [Validators.required, Validators.email]],
     password: ['', Validators.required],
   });
+
+  ngOnInit(): void {
+    if (this.auth.token()) void this.router.navigateByUrl('/');
+  }
 
   protected demo(): void {
     this.form.setValue(DEMO);

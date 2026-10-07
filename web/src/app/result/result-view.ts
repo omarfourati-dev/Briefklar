@@ -1,4 +1,4 @@
-import { Component, computed, input, signal } from '@angular/core';
+import { Component, DestroyRef, computed, effect, inject, input, signal } from '@angular/core';
 import { Explanation, Lang } from '../core/models';
 import { buildIcs } from '../lib/ics';
 import { daysUntil, isValidDate, urgencyFor } from '../lib/urgency';
@@ -32,9 +32,9 @@ const LANGS: { id: Lang; label: string }[] = [
       }
 
       <div class="card p-5">
-        <div class="flex flex-wrap gap-2" role="tablist" aria-label="Sprache">
+        <div class="flex flex-wrap gap-2" role="group" aria-label="Sprache">
           @for (l of langs; track l.id) {
-            <button type="button" role="tab" class="btn" [attr.data-lang]="l.id" [attr.aria-selected]="lang() === l.id"
+            <button type="button" class="btn" [attr.data-lang]="l.id" [attr.lang]="l.id === 'ar' ? 'ar' : null" [attr.aria-pressed]="lang() === l.id"
                     [class]="lang() === l.id ? 'btn-primary' : 'btn-secondary'" (click)="lang.set(l.id)">{{ l.label }}</button>
           }
         </div>
@@ -46,9 +46,9 @@ const LANGS: { id: Lang; label: string }[] = [
       @if (e.actions.length) {
         <div class="card p-5">
           <h3 class="font-semibold">Was ist zu tun?</h3>
-          <ul class="mt-3 space-y-2" [attr.dir]="lang() === 'ar' ? 'rtl' : 'ltr'">
+          <ul data-testid="actions" class="mt-3 space-y-2" [attr.dir]="lang() === 'ar' ? 'rtl' : 'ltr'" [attr.lang]="lang()">
             @for (a of e.actions; track $index) {
-              <li><label class="flex items-start gap-2"><input type="checkbox" class="mt-1" /> <span>{{ a[lang()] }}</span></label></li>
+              <li><label class="flex items-start gap-2"><input type="checkbox" class="mt-1" [checked]="done().has($index)" (change)="toggle($index)" /> <span>{{ a[lang()] }}</span></label></li>
             }
           </ul>
         </div>
@@ -57,7 +57,7 @@ const LANGS: { id: Lang; label: string }[] = [
       <div class="card p-5">
         <div class="flex items-center justify-between gap-2">
           <h3 class="font-semibold">Antwort-Entwurf</h3>
-          <button type="button" class="btn btn-secondary" (click)="copy()">{{ copied() ? 'Kopiert ✓' : 'Kopieren' }}</button>
+          <button type="button" class="btn btn-secondary" (click)="copy()">{{ copyLabel() }}</button>
         </div>
         <textarea class="input mt-3 h-56 font-mono text-xs" readonly [value]="e.replyDraft" aria-label="Antwort-Entwurf"></textarea>
       </div>
@@ -78,7 +78,22 @@ export class ResultView {
   readonly today = input<Date>(new Date());
   protected readonly langs = LANGS;
   protected readonly lang = signal<Lang>('de');
-  protected readonly copied = signal(false);
+  protected readonly copyLabel = signal('Kopieren');
+  protected readonly done = signal<ReadonlySet<number>>(new Set());
+  private readonly destroyRef = inject(DestroyRef);
+  private copyTimer: ReturnType<typeof setTimeout> | undefined;
+
+  constructor() {
+    // A new explanation starts with all actions unticked.
+    effect(() => { this.explanation(); this.done.set(new Set()); });
+    this.destroyRef.onDestroy(() => clearTimeout(this.copyTimer));
+  }
+
+  protected toggle(i: number): void {
+    const next = new Set(this.done());
+    if (!next.delete(i)) next.add(i);
+    this.done.set(next);
+  }
 
   protected readonly urgency = computed(() => urgencyFor(this.explanation().deadline, this.explanation().urgency, this.today()));
   protected readonly validDeadline = computed(() => {
@@ -102,15 +117,19 @@ export class ResultView {
     const ics = buildIcs({ title: `Frist: ${e.authority}`, date: e.deadline!, description: `${e.letterType}\n${e.deadlineText}` });
     const url = URL.createObjectURL(new Blob([ics], { type: 'text/calendar;charset=utf-8' }));
     const a = Object.assign(document.createElement('a'), { href: url, download: 'briefklar-frist.ics' });
+    document.body.appendChild(a);
     a.click();
-    URL.revokeObjectURL(url);
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
   }
 
   protected async copy(): Promise<void> {
+    let label = 'Kopiert ✓';
     try {
       await navigator.clipboard.writeText(this.explanation().replyDraft);
-      this.copied.set(true);
-      setTimeout(() => this.copied.set(false), 2000);
-    } catch { /* clipboard blocked: the textarea stays selectable */ }
+    } catch { label = 'Kopieren nicht möglich'; }
+    this.copyLabel.set(label);
+    clearTimeout(this.copyTimer);
+    this.copyTimer = setTimeout(() => this.copyLabel.set('Kopieren'), 2000);
   }
 }
