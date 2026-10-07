@@ -68,10 +68,12 @@ func TestSameValueGetsSamePlaceholder(t *testing.T) {
 	}
 }
 
-func TestInvalidIBANIsKept(t *testing.T) {
-	r := Redact("Konto DE00 1234 5678 9012 3456 78 ist ungültig.")
-	if !strings.Contains(r.Text, "DE00 1234 5678 9012 3456 78") {
-		t.Fatalf("invalid IBAN was redacted: %q", r.Text)
+func TestIBANShapedStringsAreRedacted(t *testing.T) {
+	r := Redact("Konto DE00 1234 5678 9012 3456 78 und de89 3704 0044 0532 0130 00 sind genannt.")
+	for _, v := range []string{"DE00 1234 5678 9012 3456 78", "de89 3704 0044 0532 0130 00"} {
+		if strings.Contains(r.Text, v) {
+			t.Errorf("%q still in %q", v, r.Text)
+		}
 	}
 }
 
@@ -106,5 +108,125 @@ func TestEmptyText(t *testing.T) {
 	r := Redact("")
 	if r.Text != "" || len(r.Findings) != 0 {
 		t.Fatalf("got %+v", r)
+	}
+}
+
+func assertFindingsInText(t *testing.T, r Result) {
+	t.Helper()
+	for _, f := range r.Findings {
+		if !strings.Contains(r.Text, f.Placeholder) {
+			t.Errorf("finding %+v has no placeholder in %q", f, r.Text)
+		}
+	}
+}
+
+func TestNoCrossPassCollision(t *testing.T) {
+	r1 := Redact("Herrn\nAnna Berg\n\nIhr Antrag ist da.")
+	r2 := Redact(r1.Text + "\nHerr Jonas Okafor rief an.")
+	assertFindingsInText(t, r1)
+	assertFindingsInText(t, r2)
+	if len(r2.Findings) == 0 {
+		t.Fatalf("second pass found nothing: %q", r2.Text)
+	}
+	for _, f2 := range r2.Findings {
+		for _, f1 := range r1.Findings {
+			if f1.Placeholder == f2.Placeholder {
+				t.Errorf("collision %s", f1.Placeholder)
+			}
+		}
+	}
+}
+
+func TestFindingsAlwaysInText(t *testing.T) {
+	assertFindingsInText(t, Redact(letter))
+}
+
+func TestUnicodeEmail(t *testing.T) {
+	r := Redact("Schreiben Sie an max.müller@web.de")
+	if strings.Contains(r.Text, "müller") || strings.Contains(r.Text, "web.de") {
+		t.Fatalf("got %q", r.Text)
+	}
+}
+
+func TestValueGlueToLetters(t *testing.T) {
+	r := Redact("Tel.: 02261 88-1234Fax")
+	if strings.Contains(r.Text, "02261") {
+		t.Fatalf("got %q", r.Text)
+	}
+}
+
+func TestNameVariants(t *testing.T) {
+	cases := []struct {
+		in   string
+		hide []string
+	}{
+		{"Herrn\nŞahin Çelik\nMusterweg 1", []string{"Şahin", "Çelik"}},
+		{"Landratsamt\r\n\r\nHerrn\r\nKarim Benali\r\nLindenweg 7\r\n51645 Gummersbach\r\n\r\nSehr geehrter Herr Benali,\r\n", []string{"Karim", "Benali", "Lindenweg 7"}},
+		{"Herrn Karim Benali, Lindenweg 7", []string{"Karim", "Benali", "Lindenweg"}},
+		{"Sehr geehrter Herr Li,\nIhr Antrag", []string{"Li"}},
+		{"Frau Dr. med. Leila El Amrani\nMusterweg 1", []string{"Leila", "Amrani"}},
+		{"Herrn Jan van der Berg\nMusterweg 1", []string{"Jan", "Berg"}},
+		{"Familie Nguyen\nMusterweg 1", []string{"Nguyen"}},
+		{"Herrn und Frau Okafor\nMusterweg 1", []string{"Okafor"}},
+	}
+	for _, c := range cases {
+		r := Redact(c.in)
+		for _, h := range c.hide {
+			if strings.Contains(r.Text, h) {
+				t.Errorf("%q: %q still in %q", c.in, h, r.Text)
+			}
+		}
+		assertFindingsInText(t, r)
+	}
+}
+
+func TestSalutationDoesNotCaptureFollowingWord(t *testing.T) {
+	r := Redact("Sehr geehrte Frau Yilmaz Sie haben recht")
+	if !strings.Contains(r.Text, "Sie haben recht") || strings.Contains(r.Text, "Yilmaz") {
+		t.Fatalf("got %q", r.Text)
+	}
+}
+
+func TestLabelsAndStreets(t *testing.T) {
+	cases := []struct{ in, hide string }{
+		{"Telefonnummer: 02261 88-1234", "02261 88-1234"},
+		{"Tel.-Nr.: 02261 88-1234", "02261 88-1234"},
+		{"Rufnummer 02261 88-1234", "02261 88-1234"},
+		{"Handy: 0171 1234567", "0171 1234567"},
+		{"Fax: 02261 88-9999", "02261 88-9999"},
+		{"Mobil: 0171 1234567", "0171 1234567"},
+		{"geb. 03.04.1995", "03.04.1995"},
+		{"geb. am 03.04.1995", "03.04.1995"},
+		{"geboren am 03.04.1995", "03.04.1995"},
+		{"Geb.-Datum: 03.04.1995", "03.04.1995"},
+		{"Steuer-Nr.: 212/5678/9012", "212/5678/9012"},
+		{"St.-Nr. 212/5678/9012", "212/5678/9012"},
+		{"Versicherungsnummer: 12345678A", "12345678A"},
+		{"Kunden-Nr.: 4711-22", "4711-22"},
+		{"BG-Nummer: 12/345", "12/345"},
+		{"Antragsnummer: AN-2026-0815", "AN-2026-0815"},
+		{"Wohnt in der Kölner Straße 12", "Kölner Straße 12"},
+		{"Berliner Platz 3", "Berliner Platz 3"},
+		{"Am Markt 4", "Am Markt 4"},
+		{"An der Kirche 5", "An der Kirche 5"},
+		{"Hauptstr.12", "Hauptstr.12"},
+	}
+	for _, c := range cases {
+		r := Redact(c.in)
+		if strings.Contains(r.Text, c.hide) {
+			t.Errorf("%q: %q still in %q", c.in, c.hide, r.Text)
+		}
+		assertFindingsInText(t, r)
+	}
+}
+
+func TestNoFalsePositives(t *testing.T) {
+	for _, in := range []string{
+		"Hotel 1234567 Titel 99887766 Automobil 5551234",
+		"Am Montag 5 Tage, Im Januar 2026 wird entschieden.",
+	} {
+		if r := Redact(in); r.Text != in {
+			t.Errorf("changed %q to %q", in, r.Text)
+		}
 	}
 }
