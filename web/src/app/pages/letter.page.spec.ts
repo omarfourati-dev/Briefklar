@@ -163,6 +163,34 @@ describe('LetterPage', () => {
     expect(body).toContain('Müllers');
   });
 
+  async function pickFile(file: File) {
+    const fixture = TestBed.createComponent(LetterPage);
+    const http = TestBed.inject(HttpTestingController);
+    const el: HTMLElement = fixture.nativeElement;
+    fixture.detectChanges();
+    const input = el.querySelectorAll('input[type=file]')[1] as HTMLInputElement;
+    Object.defineProperty(input, 'files', { value: [file], configurable: true });
+    input.dispatchEvent(new Event('change'));
+    await new Promise((r) => setTimeout(r));
+    fixture.detectChanges();
+    return { fixture, http, el };
+  }
+
+  it('rejects files over 10 MB without uploading them', async () => {
+    const big = new File([new Uint8Array(10 * 1024 * 1024 + 1)], 'brief.pdf', { type: 'application/pdf' });
+    const { http, el } = await pickFile(big);
+    http.expectNone('/api/letters/preview');
+    expect(el.querySelector('[role=alert]')?.textContent).toContain('Die Datei ist größer als 10 MB.');
+    http.verify();
+  });
+
+  it('uploads a PDF of exactly 10 MB unchanged', async () => {
+    const pdf = new File([new Uint8Array(10 * 1024 * 1024)], 'brief.pdf', { type: 'application/pdf' });
+    const { http } = await pickFile(pdf);
+    const req = http.expectOne('/api/letters/preview');
+    expect((req.request.body as FormData).get('file')).toBe(pdf);
+  });
+
   it('offers a camera input and a file input', () => {
     const fixture = TestBed.createComponent(LetterPage);
     fixture.detectChanges();

@@ -4,6 +4,7 @@ import { firstValueFrom } from 'rxjs';
 import { ApiService } from '../core/api.service';
 import { Explanation, Finding, Preview } from '../core/models';
 import { problemMessage } from '../core/problem';
+import { prepareUpload } from '../lib/image';
 import { PLACEHOLDER, PLACEHOLDER_EXACT,redactManually, restoreExplanation } from '../lib/redaction';
 import { ResultView } from '../result/result-view';
 
@@ -13,6 +14,7 @@ interface Token { text: string; kind: TokenKind; value?: string }
 // placeholders stay whole; everything else splits into words (letters/digits/marks) and separator runs
 const TOKEN_SPLIT = new RegExp(String.raw`(${PLACEHOLDER.source}|(?:(?!${PLACEHOLDER.source})[^\p{L}\p{N}\p{M}])+)`, 'u');
 const RING = 'focus-within:ring-2 focus-within:ring-brand-700 focus-within:ring-offset-2';
+const MAX_UPLOAD = 10 * 1024 * 1024; // same limit as the server
 
 @Component({
   selector: 'bk-letter',
@@ -118,13 +120,27 @@ export class LetterPage {
     const input = event.target as HTMLInputElement;
     const file = input.files?.[0];
     input.value = ''; // allow picking the same file again
-    if (file) void this.run(this.api.previewFile(file));
+    if (file) void this.upload(file);
   }
 
   protected drop(event: DragEvent): void {
     event.preventDefault();
     const file = event.dataTransfer?.files?.[0];
-    if (file) void this.run(this.api.previewFile(file));
+    if (file) void this.upload(file);
+  }
+
+  /** Photos are rotated and shrunk in the browser first; the size check applies to what would be sent. */
+  private async upload(file: File): Promise<void> {
+    this.busy.set(true);
+    this.error.set('');
+    this.recognized.set('');
+    const prepared = await prepareUpload(file);
+    if (prepared.size > MAX_UPLOAD) {
+      this.busy.set(false);
+      this.error.set('Die Datei ist größer als 10 MB.');
+      return;
+    }
+    await this.run(this.api.previewFile(prepared));
   }
 
   protected previewText(): void {
