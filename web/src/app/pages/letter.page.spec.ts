@@ -43,4 +43,102 @@ describe('LetterPage', () => {
     expect((el.querySelector('textarea[aria-label=Antwort-Entwurf]') as HTMLTextAreaElement).value).toBe('Gruß an Benali und Okafor');
     http.verify();
   });
+
+  async function toPreview(text: string, previewText: string) {
+    const fixture = TestBed.createComponent(LetterPage);
+    const http = TestBed.inject(HttpTestingController);
+    const el: HTMLElement = fixture.nativeElement;
+    fixture.detectChanges();
+    const textarea = el.querySelector('textarea') as HTMLTextAreaElement;
+    textarea.value = text;
+    textarea.dispatchEvent(new Event('input'));
+    fixture.detectChanges();
+    (el.querySelector('[data-testid=preview]') as HTMLButtonElement).click();
+    http.expectOne('/api/letters/preview').flush({ text: previewText, findings: [], inputKind: 'text' });
+    await fixture.whenStable();
+    fixture.detectChanges();
+    const click = (pred: (s: Element) => boolean) => {
+      ([...el.querySelectorAll('[data-word],[data-mask]')].find(pred) as HTMLElement).click();
+      fixture.detectChanges();
+    };
+    // the preview text with masks mapped back to their placeholders
+    const shown = () =>
+      [...(el.querySelector('[data-testid=preview-text]') as HTMLElement).children]
+        .map((c) => (c as HTMLElement).dataset['placeholder'] ?? c.textContent).join('');
+    return { fixture, http, el, click, shown };
+  }
+
+  const LONG = 'Zahlung 5 EUR bis 15.11.2026 an Okafor, nicht an Okafors Bruder.';
+
+  it('removes a one-character token from the request body', async () => {
+    const { fixture, http, click, shown } = await toPreview(LONG, LONG);
+    click((s) => s.textContent === '5');
+    expect(shown()).toBe('Zahlung [MANUELL_1] EUR bis 15.11.2026 an Okafor, nicht an Okafors Bruder.');
+    (fixture.nativeElement.querySelector('[data-testid=explain]') as HTMLButtonElement).click();
+    const req = http.expectOne('/api/letters/explain');
+    expect(req.request.body.text).toBe('Zahlung [MANUELL_1] EUR bis 15.11.2026 an Okafor, nicht an Okafors Bruder.');
+  });
+
+  it('matches whole words only and shows exactly what is sent', async () => {
+    const { fixture, http, click, shown } = await toPreview(LONG, LONG);
+    click((s) => s.textContent === 'Okafor');
+    expect(shown()).toBe('Zahlung 5 EUR bis 15.11.2026 an [MANUELL_1], nicht an Okafors Bruder.');
+    (fixture.nativeElement.querySelector('[data-testid=explain]') as HTMLButtonElement).click();
+    const req = http.expectOne('/api/letters/explain');
+    expect(req.request.body.text).toBe(shown());
+    expect(req.request.body.text).toContain('Okafors');
+  });
+
+  it('un-hides a word when its mask is clicked again', async () => {
+    const { fixture, http, el, click, shown } = await toPreview(LONG, LONG);
+    click((s) => s.textContent === 'Okafor');
+    expect(el.querySelector('[data-mask]')?.textContent).toBe('█████');
+    click((s) => s.hasAttribute('data-mask'));
+    expect(shown()).toBe(LONG);
+    (el.querySelector('[data-testid=explain]') as HTMLButtonElement).click();
+    const req = http.expectOne('/api/letters/explain');
+    expect(req.request.body.text).toBe(LONG);
+    req.flush({ explanation: { ...EXAMPLES[0].explanation, replyDraft: 'Hallo [MANUELL_1]' }, findings: [] });
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect((el.querySelector('textarea[aria-label=Antwort-Entwurf]') as HTMLTextAreaElement).value).toBe('Hallo [MANUELL_1]');
+  });
+
+  it('shows the recognized text when the preview fails with 422', async () => {
+    const fixture = TestBed.createComponent(LetterPage);
+    const http = TestBed.inject(HttpTestingController);
+    const el: HTMLElement = fixture.nativeElement;
+    fixture.detectChanges();
+    const textarea = el.querySelector('textarea') as HTMLTextAreaElement;
+    textarea.value = LONG;
+    textarea.dispatchEvent(new Event('input'));
+    fixture.detectChanges();
+    (el.querySelector('[data-testid=preview]') as HTMLButtonElement).click();
+    http.expectOne('/api/letters/preview').flush(
+      { detail: 'Der Text ist zu kurz.', recognizedText: 'abc def' }, { status: 422, statusText: 'Unprocessable' });
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(el.querySelector('[role=alert]')?.textContent).toContain('Der Text ist zu kurz.');
+    expect(el.querySelector('[data-testid=recognized]')?.textContent).toBe('abc def');
+  });
+
+  it('shows an explain error and stays on the preview', async () => {
+    const { fixture, http, el } = await toPreview(LONG, LONG);
+    (el.querySelector('[data-testid=explain]') as HTMLButtonElement).click();
+    http.expectOne('/api/letters/explain').flush({ detail: 'KI nicht erreichbar.' }, { status: 502, statusText: 'Bad Gateway' });
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(el.querySelector('[role=alert]')?.textContent).toContain('KI nicht erreichbar.');
+    expect(el.querySelector('[data-testid=explain]')).not.toBeNull();
+    expect(el.querySelector('bk-result')).toBeNull();
+  });
+
+  it('offers a camera input and a file input', () => {
+    const fixture = TestBed.createComponent(LetterPage);
+    fixture.detectChanges();
+    const inputs = [...(fixture.nativeElement as HTMLElement).querySelectorAll('input[type=file]')];
+    expect(inputs.map((i) => i.getAttribute('capture'))).toEqual(['environment', null]);
+    expect(inputs[0].getAttribute('accept')).toBe('image/*');
+    expect(inputs[1].getAttribute('accept')).toBe('image/jpeg,image/png,image/webp,application/pdf');
+  });
 });

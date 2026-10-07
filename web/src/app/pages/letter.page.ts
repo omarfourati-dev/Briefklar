@@ -4,11 +4,14 @@ import { firstValueFrom } from 'rxjs';
 import { ApiService } from '../core/api.service';
 import { Explanation, Finding, Preview } from '../core/models';
 import { problemMessage } from '../core/problem';
-import { redactManually, restoreExplanation } from '../lib/redaction';
+import { PLACEHOLDER_EXACT, redactManually, restoreExplanation } from '../lib/redaction';
 import { ResultView } from '../result/result-view';
 
 type Step = 'input' | 'preview' | 'result';
-const PLACEHOLDER = /^\[[A-Z_]+?_\d+\]$/;
+type TokenKind = 'mask' | 'server' | 'word' | 'plain';
+interface Token { text: string; kind: TokenKind; value?: string }
+const TOKEN_SPLIT = /(\[[A-Z_]+?_\d+\]|\s+|[.,;:!?()])/;
+const RING = 'focus-within:ring-2 focus-within:ring-brand-700 focus-within:ring-offset-2';
 
 @Component({
   selector: 'bk-letter',
@@ -18,12 +21,21 @@ const PLACEHOLDER = /^\[[A-Z_]+?_\d+\]$/;
     @switch (step()) {
       @case ('input') {
         <div class="mt-6 grid gap-6 lg:grid-cols-2">
-          <label class="card flex cursor-pointer flex-col items-center justify-center gap-2 border-2 border-dashed p-8 text-center"
-                 (dragover)="$event.preventDefault()" (drop)="drop($event)">
+          <div class="card flex flex-col items-center justify-center gap-3 border-2 border-dashed p-8 text-center"
+               (dragover)="$event.preventDefault()" (drop)="drop($event)">
             <span class="font-medium">Foto oder PDF hierher ziehen</span>
-            <span class="text-sm text-slate-500">oder klicken · JPG, PNG, WebP, PDF · max. 10 MB</span>
-            <input type="file" class="sr-only" accept="image/jpeg,image/png,image/webp,application/pdf" capture="environment" (change)="pick($event)" />
-          </label>
+            <span class="text-sm text-slate-500">JPG, PNG, WebP, PDF · max. 10 MB</span>
+            <div class="flex flex-wrap justify-center gap-2">
+              <label class="btn btn-secondary cursor-pointer ${RING}">
+                Foto aufnehmen
+                <input type="file" class="sr-only" accept="image/*" capture="environment" (change)="pick($event)" />
+              </label>
+              <label class="btn btn-secondary cursor-pointer ${RING}">
+                Datei wählen
+                <input type="file" class="sr-only" accept="image/jpeg,image/png,image/webp,application/pdf" (change)="pick($event)" />
+              </label>
+            </div>
+          </div>
           <div class="card p-5">
             <label class="label" for="text">… oder Text einfügen</label>
             <textarea id="text" class="input h-48" [value]="text()" (input)="text.set($any($event.target).value)"></textarea>
@@ -35,13 +47,16 @@ const PLACEHOLDER = /^\[[A-Z_]+?_\d+\]$/;
       @case ('preview') {
         <div class="card mt-6 p-5">
           <h2 class="font-semibold">Vorschau: das bekommt die KI</h2>
-          <p class="mt-1 text-sm text-slate-600">Gelb = geschwärzt. Klicke auf ein Wort, um es zusätzlich zu schwärzen; nochmal klicken hebt es auf.</p>
-          <p class="mt-4 rounded-lg bg-slate-50 p-4 text-sm leading-7 whitespace-pre-wrap">
+          <p class="mt-1 text-sm text-slate-600">Gelb = geschwärzt. Klicke auf ein Wort, um es zusätzlich zu schwärzen; ein Klick auf einen Balken hebt die Schwärzung auf.</p>
+          <p data-testid="preview-text" class="mt-4 rounded-lg bg-slate-50 p-4 text-sm leading-7 whitespace-pre-wrap">
             @for (tok of tokens(); track $index) {
-              @if (tok.word) {
-                <span data-word class="cursor-pointer rounded px-0.5"
-                      [class]="tok.hidden ? 'bg-amber-300 text-amber-900' : 'hover:bg-amber-100'"
-                      (click)="toggle(tok.text)">{{ tok.hidden && !tok.placeholder ? '█████' : tok.text }}</span>
+              @if (tok.kind === 'mask') {
+                <span data-mask [attr.data-placeholder]="tok.text" class="cursor-pointer rounded bg-amber-300 px-0.5 text-amber-900"
+                      title="Klicken, um die Schwärzung aufzuheben" (click)="toggle(tok.value!)">█████</span>
+              } @else if (tok.kind === 'server') {
+                <span data-server [attr.data-placeholder]="tok.text" class="rounded bg-amber-300 px-0.5 text-amber-900">{{ tok.text }}</span>
+              } @else if (tok.kind === 'word') {
+                <span data-word class="cursor-pointer rounded px-0.5 hover:bg-amber-100" (click)="toggle(tok.text)">{{ tok.text }}</span>
               } @else {<span>{{ tok.text }}</span>}
             }
           </p>
@@ -60,7 +75,7 @@ const PLACEHOLDER = /^\[[A-Z_]+?_\d+\]$/;
     @if (error()) {
       <div class="mt-4 rounded-lg border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800" role="alert">
         {{ error() }}
-        @if (recognized()) { <pre class="mt-2 text-xs whitespace-pre-wrap">{{ recognized() }}</pre> }
+        @if (recognized()) { <pre data-testid="recognized" class="mt-2 text-xs whitespace-pre-wrap">{{ recognized() }}</pre> }
       </div>
     }
   `,
@@ -76,24 +91,32 @@ export class LetterPage {
   private readonly manual = signal<string[]>([]);
   protected readonly result = signal<Explanation | null>(null);
 
-  protected readonly tokens = computed(() => {
+  /** Single source of truth: exactly this text (and these findings) is shown and sent. */
+  private readonly sent = computed(() => {
     const p = this.preview();
-    if (!p) return [];
-    const hidden = new Set(this.manual());
-    return p.text.split(/(\s+|[.,;:!?()])/).filter((t) => t !== '').map((t) => {
-      const placeholder = PLACEHOLDER.test(t);
-      const word = /\p{L}|\d/u.test(t);
-      return { text: t, word, placeholder, hidden: placeholder || hidden.has(t) };
+    return p ? redactManually(p.text, this.manual()) : { text: '', findings: [] as Finding[] };
+  });
+
+  protected readonly tokens = computed((): Token[] => {
+    const { text, findings } = this.sent();
+    const manualValues = new Map(findings.map((f) => [f.placeholder, f.value]));
+    return text.split(TOKEN_SPLIT).filter((t) => t !== '').map((t): Token => {
+      if (PLACEHOLDER_EXACT.test(t)) {
+        const value = manualValues.get(t);
+        return value === undefined ? { text: t, kind: 'server' } : { text: t, kind: 'mask', value };
+      }
+      return { text: t, kind: /\p{L}|\d/u.test(t) ? 'word' : 'plain' };
     });
   });
 
   protected toggle(word: string): void {
-    if (PLACEHOLDER.test(word)) return;
     this.manual.update((m) => (m.includes(word) ? m.filter((w) => w !== word) : [...m, word]));
   }
 
   protected pick(event: Event): void {
-    const file = (event.target as HTMLInputElement).files?.[0];
+    const input = event.target as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = ''; // allow picking the same file again
     if (file) void this.run(this.api.previewFile(file));
   }
 
@@ -125,12 +148,12 @@ export class LetterPage {
 
   protected async explain(): Promise<void> {
     const p = this.preview()!;
-    const manual = redactManually(p.text, this.manual());
+    const sent = this.sent();
     this.busy.set(true);
     this.error.set('');
     try {
-      const res = await firstValueFrom(this.api.explain(manual.text));
-      const findings: Finding[] = [...p.findings, ...manual.findings, ...res.findings];
+      const res = await firstValueFrom(this.api.explain(sent.text));
+      const findings: Finding[] = [...p.findings, ...sent.findings, ...res.findings];
       this.result.set(restoreExplanation(res.explanation, findings));
       this.step.set('result');
     } catch (err) {
@@ -146,5 +169,6 @@ export class LetterPage {
     this.result.set(null);
     this.text.set('');
     this.error.set('');
+    this.recognized.set('');
   }
 }

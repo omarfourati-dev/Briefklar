@@ -59,3 +59,11 @@ describe('redaction helpers', () => {
     expect(r.findings.map((x) => x.value)).toEqual(['Herr Okafor', 'Okafor']);
   });
 });
+
+describe('redactManually word boundaries', () => {
+  it('matches whole words only, including one-character words', () => {
+    const r = redactManually('Okafor und Okafors, 5 von 15 Äpfeln', ['Okafor', '5']);
+    expect(r.text).toBe('[MANUELL_1] und Okafors, [MANUELL_2] von 15 Äpfeln');
+    expect(r.findings.map((f) => f.value).sort()).toEqual(['5', 'Okafor']);
+  });
+});

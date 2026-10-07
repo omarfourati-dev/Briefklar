@@ -59,16 +59,23 @@ export class AdminPage implements OnInit {
     email: ['', [Validators.required, Validators.email]],
     password: ['', [Validators.required, Validators.minLength(12)]],
     role: ['user' as 'user' | 'admin'],
-    dailyLimit: [20, [Validators.min(0), Validators.max(1000)]],
+    dailyLimit: [20, [Validators.required, Validators.min(0), Validators.max(1000)]],
   });
+  private creating = false;
 
   ngOnInit(): void { void this.load(); }
 
   private async load(): Promise<void> {
-    this.users.set(await firstValueFrom(this.api.users()));
+    try {
+      this.users.set(await firstValueFrom(this.api.users()));
+    } catch (err) {
+      this.message.set(problemMessage(err, 'Benutzer konnten nicht geladen werden.'));
+    }
   }
 
   protected async create(): Promise<void> {
+    if (this.creating || this.form.invalid) return;
+    this.creating = true;
     try {
       const u = await firstValueFrom(this.api.createUser(this.form.getRawValue()));
       this.message.set(`${u.name} wurde angelegt.`);
@@ -76,6 +83,8 @@ export class AdminPage implements OnInit {
       await this.load();
     } catch (err) {
       this.message.set(problemMessage(err, 'Benutzer konnte nicht angelegt werden.'));
+    } finally {
+      this.creating = false;
     }
   }
 

@@ -1,6 +1,9 @@
 import { Explanation, Finding, Texts } from '../core/models';
 
-const PLACEHOLDER = /\[[A-Z_]+?_\d+\]/g;
+/** Matches exactly one placeholder (non-global, anchored). */
+export const PLACEHOLDER_EXACT = /^\[[A-Z_]+?_\d+\]$/;
+/** Matches placeholders anywhere in a text (global; use with replace/split/match only). */
+export const PLACEHOLDER = /\[[A-Z_]+?_\d+\]/g;
 
 export function restore(text: string, findings: Finding[]): string {
   const values = new Map(findings.map((f) => [f.placeholder, f.value]));
@@ -22,20 +25,26 @@ export function restoreExplanation(e: Explanation, findings: Finding[]): Explana
   };
 }
 
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 /** Words the user clicked in the preview become [MANUELL_n]; numbering continues after existing ones. */
 export function redactManually(text: string, words: string[]): { text: string; findings: Finding[] } {
   let next = Math.max(0, ...[...text.matchAll(/\[MANUELL_(\d+)\]/g)].map((m) => Number(m[1])));
   const findings: Finding[] = [];
-  const unique = [...new Set(words.map((w) => w.trim()).filter((w) => w.length >= 2))].sort((a, b) => b.length - a.length);
+  const unique = [...new Set(words.map((w) => w.trim()).filter((w) => w.length >= 1))].sort((a, b) => b.length - a.length);
   let out = text;
   for (const word of unique) {
     // split the text into placeholders and plain parts, replace only in plain parts
     const parts = out.split(PLACEHOLDER);
     const holders = out.match(PLACEHOLDER) ?? [];
-    if (!parts.some((p) => p.includes(word))) continue;
+    // a word only matches as a whole word: neighbours must not be letters or digits
+    const re = new RegExp(String.raw`(?<![\p{L}\d])${escapeRegExp(word)}(?![\p{L}\d])`, 'gu');
+    if (!parts.some((p) => new RegExp(re.source, 'u').test(p))) continue;
     const placeholder = `[MANUELL_${++next}]`;
     findings.push({ placeholder, kind: 'MANUELL', value: word });
-    out = parts.map((p, i) => p.split(word).join(placeholder) + (holders[i] ?? '')).join('');
+    out = parts.map((p, i) => p.replace(re, placeholder) + (holders[i] ?? '')).join('');
   }
   return { text: out, findings };
 }
