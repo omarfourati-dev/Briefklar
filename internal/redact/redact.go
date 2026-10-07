@@ -42,6 +42,7 @@ type rule struct {
 	kind  Kind
 	re    *regexp.Regexp
 	group int               // capture group with the value; 0 = whole match
+	clean bool              // cut the name at the first stop word
 	valid func(string) bool // optional extra check on the value
 }
 
@@ -50,21 +51,50 @@ const (
 	label = `[ \t]*:?[ \t]*`
 
 	nameWord = `\p{Lu}[\p{L}'’-]*`
-	particle = `(?:(?:von|van|der|den|de|del|el|al|bin|ibn|zu|zur) )`
-	title    = `(?:(?:Prof|Dr|med|jur|Dipl|Ing)\.-?[ \t]*)*`
-	salut    = `(?:Herrn|Herr|Frau|Familie)`
+	initials = `(?:\p{Lu}\. )*`
+	// Address block and salutation end at a comma or line end, so particles may be written in any case there.
+	particleAny = `(?:(?i:von|van|der|den|de|del|el|al|bin|ibn|zu|zur) )`
+	// In running text only lower-case particles link a second name part ("Herr van der Berg", not "zu Hause").
+	particleLow = `(?:(?:von|van|der|de|del|el|al|bin|ibn) )`
+	title       = `(?:(?:Prof|Dr|med|jur|Dipl|Ing)\.-?[ \t]*)*`
+	salutAddr   = `(?:Herrn|Herr|Frau|Familie)`
+	salutMid    = `(?:Herrn|Herr|Frau)`
 
 	houseNo      = `\d{1,3}(?: ?[a-z])?\b`
+	streetUnit   = `(?:[ \t]+(?:km|m|Minuten|Min|Meter|Stunden|Kilometer)\b)?`
 	streetEnd    = `(?:straße|strasse|str\.|weg|allee|platz|gasse|ring|damm|ufer)`
 	streetEndCap = `(?:Straße|Strasse|Str\.|Weg|Allee|Platz|Gasse|Ring|Damm|Ufer)`
 )
 
-// person captures a name of up to 1+extra words, with lower-case particles allowed between words.
-func person(extra int) string {
-	return `(` + nameWord + `(?: ` + particle + `*` + nameWord + `){0,` + strconv.Itoa(extra) + `})`
+// person captures a name of up to 1+extra words (optionally with initials in front).
+func person(extra int, particle string) string {
+	return `(` + initials + nameWord + `(?: ` + particle + `*` + nameWord + `){0,` + strconv.Itoa(extra) + `})`
 }
 
-var notDate = regexp.MustCompile(`(?i)\b(?:montag|dienstag|mittwoch|donnerstag|freitag|samstag|sonntag|januar|februar|märz|april|mai|juni|juli|august|september|oktober|november|dezember)\b`)
+// personMid captures exactly one name word, plus a part linked by a particle.
+func personMid() string {
+	return `(` + initials + nameWord + `(?: ` + particleLow + `+` + nameWord + `)?)`
+}
+
+var (
+	notDate    = regexp.MustCompile(`(?i)\b(?:montag|dienstag|mittwoch|donnerstag|freitag|samstag|sonntag|januar|februar|märz|april|mai|juni|juli|august|september|oktober|november|dezember)\b`)
+	unitSuffix = regexp.MustCompile(`[ \t](?:km|m|Minuten|Min|Meter|Stunden|Kilometer)$`)
+)
+
+// notLetterPhrase rejects "In der Anlage 2", "Am Ende 3 Wochen" and "Am Montag 5 Tage".
+var notLetterPhrase = map[string]bool{"anlage": true, "absatz": true, "abschnitt": true, "ende": true, "jahr": true, "jahre": true,
+	"monat": true, "monate": true, "woche": true, "wochen": true, "tag": true, "tage": true, "rahmen": true, "fall": true,
+	"punkt": true, "paragraph": true, "kapitel": true, "seite": true, "zeitraum": true, "anfang": true, "stelle": true}
+
+func validPrefixStreet(s string) bool {
+	words := strings.Fields(s)
+	if len(words) < 3 || notDate.MatchString(s) {
+		return false
+	}
+	return !notLetterPhrase[strings.ToLower(words[len(words)-2])]
+}
+
+func noUnit(s string) bool { return !unitSuffix.MatchString(s) }
 
 var rules = []rule{
 	{kind: Email, re: regexp.MustCompile(`[\p{L}\p{N}._%+-]+@[\p{L}\p{N}.-]+\.\p{L}{2,}`)},
@@ -77,27 +107,27 @@ var rules = []rule{
 	{kind: Phone, re: regexp.MustCompile(`\+49[\d /()-]{6,}\d`)},
 	{kind: Reference, re: regexp.MustCompile(`(?i)\b(?:aktenzeichen|az\.|gesch(?:ä|ae)ftszeichen|unser zeichen|ihr zeichen|kundennummer|kunden-nr\.?|beitragsnummer|kassenzeichen|vorgangsnummer|versichertennummer|versicherungsnummer|mitgliedsnummer|bg-nummer|antragsnummer)` +
 		label + `([A-Za-z0-9./-]*\d[A-Za-z0-9./-]*(?: [A-Za-z0-9./-]*\d[A-Za-z0-9./-]*)*)`), group: 1},
-	// "Hauptstraße 12", "Hauptstr.12"
-	{kind: Street, re: regexp.MustCompile(`\p{Lu}[\p{L}-]*` + streetEnd + `[ \t]?` + houseNo)},
+	// "Hauptstraße 12", "Hauptstr.12" – but not "Arbeitsweg 12 km"
+	{kind: Street, re: regexp.MustCompile(`\p{Lu}[\p{L}-]*` + streetEnd + `[ \t]?` + houseNo + streetUnit), valid: noUnit},
 	// "Kölner Straße 12", "Berliner Platz 3"
-	{kind: Street, re: regexp.MustCompile(`\p{Lu}[\p{L}-]+ ` + streetEndCap + `[ \t]?` + houseNo)},
-	// "Am Markt 4", "An der Kirche 5" – but not "Am Montag 5 Tage"
-	{kind: Street, re: regexp.MustCompile(`(?:Am|An der|Im|Auf dem|Zum|Zur|In der|Beim) \p{Lu}[\p{L}-]+ ` + houseNo),
-		valid: func(s string) bool { return !notDate.MatchString(s) }},
+	{kind: Street, re: regexp.MustCompile(`\p{Lu}[\p{L}-]+ ` + streetEndCap + `[ \t]?` + houseNo + streetUnit), valid: noUnit},
+	// "Am Markt 4", "An der Kirche 5" – but not "Am Montag 5 Tage" or "In der Anlage 2"
+	{kind: Street, re: regexp.MustCompile(`(?:Am|An der|Im|Auf dem|Zum|Zur|In der|Beim) \p{Lu}[\p{L}-]+ ` + houseNo), valid: validPrefixStreet},
 	{kind: Place, re: regexp.MustCompile(`\b\d{5} (?:Bad |Sankt |St\. )?\p{Lu}\p{Ll}+(?:-\p{Lu}?\p{Ll}+)*(?: (?:an der|am|im|ob der) \p{Lu}\p{Ll}+)?`)},
 	// Address field: "Herrn"/"Frau"/"Familie" followed by the name on the same or the next line.
-	{kind: Name, re: regexp.MustCompile(`(?m)^[ \t]*` + salut + `(?:[ \t]+|[ \t]*\r?\n[ \t]*)(?:(?:und|u\.)[ \t]+(?:Herrn|Herr|Frau)[ \t]+)?` + title + person(3) + `[ \t]*(?:,|\r?$)`), group: 1},
-	{kind: Name, re: regexp.MustCompile(`(?m)Sehr geehrte(?:r)?[ \t]+` + salut + `[ \t]+` + title + person(3) + `[ \t]*(?:,|\r?$)`), group: 1},
-	// "Herr Okafor ist informiert" in running text.
-	{kind: Name, re: regexp.MustCompile(`\b` + salut + `[ \t]+` + title + person(2)), group: 1},
+	{kind: Name, re: regexp.MustCompile(`(?m)^[ \t]*` + salutAddr + `(?:[ \t]+|[ \t]*\r?\n[ \t]*)(?:(?:und|u\.)[ \t]+(?:Herrn|Herr|Frau)[ \t]+)?` + title + person(3, particleAny) + `[ \t]*(?:,|\r?$)`), group: 1},
+	{kind: Name, re: regexp.MustCompile(`(?m)Sehr geehrte(?:r)?[ \t]+` + salutAddr + `[ \t]+` + title + person(3, particleAny) + `[ \t]*(?:,|\r?$)`), group: 1},
+	// "Herr Okafor ist informiert" in running text: exactly one name word.
+	{kind: Name, re: regexp.MustCompile(`\b` + salutMid + `[ \t]+` + title + personMid()), group: 1, clean: true},
 }
 
 var particles = map[string]bool{"von": true, "van": true, "der": true, "den": true, "de": true, "del": true,
 	"el": true, "al": true, "bin": true, "ibn": true, "zu": true, "zur": true}
 
-// nameStop are capitalised words that can follow a name in running text but are not part of it.
+// nameStop are capitalised words that can follow "Herr"/"Frau" in running text but are not a name.
+// Particles are never stop words.
 var nameStop = map[string]bool{"Sie": true, "Ihr": true, "Ihre": true, "Ihren": true, "Ihrem": true, "Ihnen": true, "Ihrer": true,
-	"Der": true, "Die": true, "Das": true, "Und": true, "Wir": true, "Er": true, "Es": true, "Bitte": true,
+	"Die": true, "Das": true, "Und": true, "Wir": true, "Er": true, "Es": true, "Bitte": true,
 	"Mit": true, "Am": true, "Im": true, "In": true, "An": true, "Auf": true, "Für": true}
 
 // cleanName cuts the value at the first word that cannot belong to a name.
@@ -112,29 +142,48 @@ func cleanName(v string) string {
 	return strings.Join(keep, " ")
 }
 
+// isNamePart tells whether a word of a full name is worth redacting on its own (not particles, not initials).
 func isNamePart(w string) bool {
 	r, _ := utf8.DecodeRuneInString(w)
-	return unicode.IsUpper(r) && !particles[strings.ToLower(w)] && !nameStop[w]
+	return unicode.IsUpper(r) && !strings.HasSuffix(w, ".") && !particles[strings.ToLower(w)]
 }
 
 var existingPlaceholder = regexp.MustCompile(`\[([A-Z_]+?)_(\d+)\]`)
 
 // Values are swapped for private-use tokens first and numbered afterwards, so only values that really
-// were substituted become findings, numbered by first appearance in the output.
+// were substituted become findings, numbered by first appearance in the output. The token delimiter is a
+// private-use character that does not occur in the input, so no input can collide with or forge a token.
 const (
-	tokOpen  = ''
-	tokClose = ''
-	tokBase  = 0xE100
-	maxHits  = 0x1700
+	tokBase = 0xE100
+	maxHits = 0x1700
 )
 
-func token(idx int) string {
-	return string(tokOpen) + string(rune(tokBase+idx)) + string(tokClose)
+func isPrivateUse(r rune) bool { return r >= 0xE000 && r <= 0xF8FF }
+
+// tokenDelimiter returns a private-use rune that is not in text; text is returned without private-use
+// characters in the (practically impossible) case that all of them are taken.
+func tokenDelimiter(text string) (rune, string) {
+	for r := rune(0xE000); r <= 0xF8FF; r++ {
+		if !strings.ContainsRune(text, r) {
+			return r, text
+		}
+	}
+	return 0xE000, strings.Map(func(r rune) rune {
+		if isPrivateUse(r) {
+			return -1
+		}
+		return r
+	}, text)
+}
+
+func token(delim rune, idx int) string {
+	return string(delim) + string(rune(tokBase+idx)) + string(delim)
 }
 
 // Redact finds personal data and replaces it with placeholders. Numbering continues after placeholders
 // that are already in the text, so a second pass (or manual redactions) never reuses a number.
 func Redact(text string) Result {
+	delim, text := tokenDelimiter(text)
 	type hit struct {
 		kind  Kind
 		value string
@@ -156,7 +205,7 @@ func Redact(text string) Result {
 	for _, r := range rules {
 		for _, m := range r.re.FindAllStringSubmatch(text, -1) {
 			v := m[r.group]
-			if r.kind == Name {
+			if r.clean {
 				v = cleanName(v)
 			}
 			if r.valid != nil && !r.valid(v) {
@@ -195,14 +244,18 @@ func Redact(text string) Result {
 	sort.SliceStable(order, func(a, b int) bool { return len(hits[order[a]].value) > len(hits[order[b]].value) })
 	for _, idx := range order {
 		h := hits[idx]
-		tok := token(idx)
+		tok := token(delim, idx)
 		for i := range segs {
 			if segs[i].fixed {
 				continue
 			}
-			if h.kind == Name {
-				segs[i].s = replaceWord(segs[i].s, h.value, tok)
-			} else {
+			switch h.kind {
+			case Name:
+				segs[i].s = replaceBounded(segs[i].s, h.value, tok, func(b, a rune) bool { return isWordRune(b) || isWordRune(a) })
+			case Phone, Reference, TaxID, TaxNumber, IBAN, Birthdate:
+				// never inside a longer number ("123" in "1234,00"), but "1234Fax" is fine
+				segs[i].s = replaceBounded(segs[i].s, h.value, tok, func(b, a rune) bool { return unicode.IsDigit(b) || unicode.IsDigit(a) })
+			default:
 				segs[i].s = strings.ReplaceAll(segs[i].s, h.value, tok)
 			}
 		}
@@ -223,13 +276,13 @@ func Redact(text string) Result {
 	var out strings.Builder
 	rest := joined.String()
 	for {
-		i := strings.IndexRune(rest, tokOpen)
+		i := strings.IndexRune(rest, delim)
 		if i < 0 {
 			out.WriteString(rest)
 			break
 		}
 		out.WriteString(rest[:i])
-		r, w := utf8.DecodeRuneInString(rest[i+len(string(tokOpen)):])
+		r, w := utf8.DecodeRuneInString(rest[i+utf8.RuneLen(delim):])
 		idx := int(r - tokBase)
 		ph, ok := assigned[idx]
 		if !ok {
@@ -240,7 +293,7 @@ func Redact(text string) Result {
 			findings = append(findings, Finding{Placeholder: ph, Kind: h.kind, Value: h.value})
 		}
 		out.WriteString(ph)
-		rest = rest[i+len(string(tokOpen))+w+len(string(tokClose)):]
+		rest = rest[i+2*utf8.RuneLen(delim)+w:]
 	}
 	return Result{Text: out.String(), Findings: findings}
 }
@@ -253,9 +306,9 @@ func Restore(text string, findings []Finding) string {
 	return text
 }
 
-// replaceWord replaces whole-word occurrences only (Go's \b knows no umlauts, so boundaries are checked by hand).
-// Used for names, which also occur as parts of other words.
-func replaceWord(text, word, repl string) string {
+// replaceBounded replaces occurrences of word unless blocked(rune before, rune after) says the occurrence
+// touches something it must not (Go's \b knows no umlauts, so boundaries are checked by hand).
+func replaceBounded(text, word, repl string, blocked func(before, after rune) bool) string {
 	var b strings.Builder
 	i := 0
 	for {
@@ -269,7 +322,7 @@ func replaceWord(text, word, repl string) string {
 		before, _ := utf8.DecodeLastRuneInString(text[:j])
 		after, _ := utf8.DecodeRuneInString(text[end:])
 		b.WriteString(text[i:j])
-		if isWordRune(before) || isWordRune(after) {
+		if blocked(before, after) {
 			b.WriteString(word)
 		} else {
 			b.WriteString(repl)

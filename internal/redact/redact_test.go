@@ -220,6 +220,79 @@ func TestLabelsAndStreets(t *testing.T) {
 	}
 }
 
+func TestPrivateUseCharactersInInput(t *testing.T) {
+	forged := ""
+	for _, in := range []string{
+		"Bullet  text, Mail a@x.de",
+		"Mail a@x.de " + forged + " und " + forged,
+		"Herrn\nKarim Benali\n",
+	} {
+		r := Redact(in) // must not panic
+		if strings.Contains(in, forged) && strings.Count(r.Text, forged) != strings.Count(in, forged) {
+			t.Errorf("forged sequence rewritten: %q", r.Text)
+		}
+		if got := Restore(r.Text, r.Findings); got != in {
+			t.Errorf("round trip changed %q to %q", in, got)
+		}
+		assertFindingsInText(t, r)
+	}
+}
+
+func TestRunningTextTakesOnlyOneWord(t *testing.T) {
+	r := Redact("Wir stellen fest, dass Herr Benali Kindergeld bezieht. Das Kindergeld wird gezahlt. Für Ihre Familie Leistungen beantragt.")
+	if strings.Contains(r.Text, "Benali") || strings.Count(r.Text, "Kindergeld") != 2 || !strings.Contains(r.Text, "Leistungen") {
+		t.Fatalf("got %q", r.Text)
+	}
+}
+
+func TestCapitalisedParticlesAndInitials(t *testing.T) {
+	cases := []struct {
+		in   string
+		hide []string
+	}{
+		{"Herrn\nJan Van Der Berg\nMusterweg 1", []string{"Jan", "Van", "Der", "Berg"}},
+		{"Herrn\nMaria De Souza\nMusterweg 1", []string{"Maria", "Souza"}},
+		{"Herrn\nA. Müller\nMusterweg 1", []string{"A.", "Müller"}},
+		{"Sehr geehrter Herr A. Müller,\nIhr Antrag", []string{"A.", "Müller"}},
+		{"Herrn\nProf. Dr. Anna Lang\nMusterweg 1", []string{"Anna", "Lang"}},
+		{"Herrn\nPeter von Stein\nMusterweg 1", []string{"Peter", "Stein"}},
+		{"Herrn\nOmar al Rashid\nMusterweg 1", []string{"Omar", "Rashid"}},
+		{"Frau\nAna de Souza\nMusterweg 1", []string{"Ana", "Souza"}},
+	}
+	for _, c := range cases {
+		r := Redact(c.in)
+		for _, h := range c.hide {
+			if strings.Contains(r.Text, h) {
+				t.Errorf("%q: %q still in %q", c.in, h, r.Text)
+			}
+		}
+		assertFindingsInText(t, r)
+	}
+}
+
+func TestLetterPhrasesAreNotStreets(t *testing.T) {
+	for _, in := range []string{"In der Anlage 2 finden Sie", "Im Absatz 3 steht", "Am Ende 3 Wochen später", "Der Arbeitsweg 12 km ist lang"} {
+		if r := Redact(in); r.Text != in {
+			t.Errorf("changed %q to %q", in, r.Text)
+		}
+	}
+	for _, c := range []struct{ in, hide string }{
+		{"Am Markt 4, 51643 Gummersbach", "Am Markt 4"},
+		{"An der Kirche 5, 51643 Gummersbach", "An der Kirche 5"},
+	} {
+		if r := Redact(c.in); strings.Contains(r.Text, c.hide) {
+			t.Errorf("%q still in %q", c.hide, r.Text)
+		}
+	}
+}
+
+func TestNumbersNotReplacedInsideOtherNumbers(t *testing.T) {
+	r := Redact("Az.: 123\nBetrag 1234,00 EUR")
+	if !strings.Contains(r.Text, "1234,00 EUR") || strings.Contains(r.Text, "Az.: 123\n") {
+		t.Fatalf("got %q", r.Text)
+	}
+}
+
 func TestNoFalsePositives(t *testing.T) {
 	for _, in := range []string{
 		"Hotel 1234567 Titel 99887766 Automobil 5551234",
