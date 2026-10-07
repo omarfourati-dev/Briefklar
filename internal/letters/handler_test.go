@@ -178,3 +178,156 @@ func TestExplainUpstreamErrors(t *testing.T) {
 		}
 	}
 }
+
+type errQuota struct{}
+
+func (errQuota) TakeQuota(context.Context, string, time.Time) (int, bool, error) {
+	return 0, false, errors.New("db down")
+}
+
+func TestExplainQuotaError(t *testing.T) {
+	h := handler(nil, true, explain.Fake{})
+	h.Quota = errQuota{}
+	rec := httptest.NewRecorder()
+	h.Explain(rec, explainReq(strings.Repeat("Brief ", 10)))
+	if rec.Code != 500 || !strings.Contains(rec.Body.String(), "Die Erklärung ist gerade nicht möglich") || strings.Contains(rec.Body.String(), "db down") {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+}
+
+func TestPreviewExactLimit(t *testing.T) {
+	png := func(n int) []byte {
+		b := make([]byte, n)
+		copy(b, []byte{0x89, 'P', 'N', 'G'})
+		return b
+	}
+	rec := httptest.NewRecorder()
+	handler(fakeExtractor{text: sample}, true, nil).Preview(rec, as("user", upload(t, "", "", png(maxUpload+1))))
+	if rec.Code != 413 {
+		t.Fatalf("limit+1: %d", rec.Code)
+	}
+	rec = httptest.NewRecorder()
+	handler(fakeExtractor{text: sample}, true, nil).Preview(rec, as("user", upload(t, "", "", png(maxUpload))))
+	if rec.Code == 413 {
+		t.Fatalf("exact limit rejected: %d", rec.Code)
+	}
+}
+
+func TestExplainBodyTooLarge(t *testing.T) {
+	rec := httptest.NewRecorder()
+	handler(nil, true, explain.Fake{}).Explain(rec, explainReq(strings.Repeat("a", 130<<10)))
+	if rec.Code != 413 {
+		t.Fatalf("%d", rec.Code)
+	}
+	rec = httptest.NewRecorder()
+	handler(nil, true, explain.Fake{}).Explain(rec, as("user", httptest.NewRequest("POST", "/x", strings.NewReader("{kaputt"))))
+	if rec.Code != 400 {
+		t.Fatalf("malformed %d", rec.Code)
+	}
+}
+
+func TestMissingClaimsUnauthorized(t *testing.T) {
+	h := handler(fakeExtractor{text: sample}, true, explain.Fake{})
+	rec := httptest.NewRecorder()
+	h.Preview(rec, upload(t, "text", sample, nil))
+	if rec.Code != 401 || !strings.Contains(rec.Body.String(), "Bitte anmelden.") {
+		t.Fatalf("preview %d %s", rec.Code, rec.Body)
+	}
+	body, _ := json.Marshal(map[string]string{"text": sample})
+	rec = httptest.NewRecorder()
+	h.Explain(rec, httptest.NewRequest("POST", "/x", bytes.NewReader(body)))
+	if rec.Code != 401 {
+		t.Fatalf("explain %d", rec.Code)
+	}
+}
+
+type mustNotExtract struct{ t *testing.T }
+
+func (m mustNotExtract) Extract(context.Context, []byte) (string, extract.Kind, error) {
+	m.t.Error("extractor called")
+	return "", extract.Text, nil
+}
+
+type mustNotQuota struct{ t *testing.T }
+
+func (m mustNotQuota) TakeQuota(context.Context, string, time.Time) (int, bool, error) {
+	m.t.Error("quota called")
+	return 0, false, nil
+}
+
+func TestDemoDoesNotTouchExtractorOrQuota(t *testing.T) {
+	h := handler(mustNotExtract{t}, true, explain.Fake{})
+	h.Quota = mustNotQuota{t}
+	rec := httptest.NewRecorder()
+	h.Preview(rec, as("demo", upload(t, "", "", []byte{0x89, 'P', 'N', 'G'})))
+	if rec.Code != 403 {
+		t.Fatalf("preview %d", rec.Code)
+	}
+	rec = httptest.NewRecorder()
+	h.Explain(rec, as("demo", explainReq(sample)))
+	if rec.Code != 403 {
+		t.Fatalf("explain %d", rec.Code)
+	}
+}
+
+type orderRecorder struct{ calls []string }
+
+func (o *orderRecorder) TakeQuota(context.Context, string, time.Time) (int, bool, error) {
+	o.calls = append(o.calls, "quota")
+	return 1, true, nil
+}
+
+func (o *orderRecorder) Explain(ctx context.Context, text string) (explain.Explanation, error) {
+	o.calls = append(o.calls, "explain")
+	return explain.Fake{}.Explain(ctx, text)
+}
+
+func TestExplainQuotaOrder(t *testing.T) {
+	o := &orderRecorder{}
+	h := handler(nil, true, o)
+	h.Quota = o
+	h.Explain(httptest.NewRecorder(), explainReq("kurz"))
+	if len(o.calls) != 0 {
+		t.Fatalf("invalid length took quota or explained: %v", o.calls)
+	}
+	rec := httptest.NewRecorder()
+	h.Explain(rec, explainReq(sample))
+	if rec.Code != 200 || strings.Join(o.calls, ",") != "quota,explain" {
+		t.Fatalf("%d %v", rec.Code, o.calls)
+	}
+}
+
+func TestPreviewGenericExtractionError(t *testing.T) {
+	rec := httptest.NewRecorder()
+	handler(fakeExtractor{err: errors.New("tesseract exit status 1 /tmp/secret")}, true, nil).
+		Preview(rec, as("user", upload(t, "", "", []byte{0x89, 'P', 'N', 'G'})))
+	if rec.Code != 500 || strings.Contains(rec.Body.String(), "tesseract") || strings.Contains(rec.Body.String(), "/tmp") {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+}
+
+func TestLogsNeverContainLetterText(t *testing.T) {
+	var logs bytes.Buffer
+	h := handler(fakeExtractor{text: sample}, true, failingExplainer{errors.New("upstream failure")})
+	h.Log = slog.New(slog.NewTextHandler(&logs, nil))
+	png := []byte{0x89, 'P', 'N', 'G'}
+
+	h.Preview(httptest.NewRecorder(), as("user", upload(t, "text", sample, nil)))
+	h.Preview(httptest.NewRecorder(), as("user", upload(t, "", "", png)))
+	h.Extractor = fakeExtractor{text: sample, err: extract.ErrNoText}
+	h.Preview(httptest.NewRecorder(), as("user", upload(t, "", "", png)))
+	h.Extractor = fakeExtractor{text: sample, err: errors.New("tool exit status 1")}
+	h.Preview(httptest.NewRecorder(), as("user", upload(t, "", "", png)))
+	h.Explain(httptest.NewRecorder(), explainReq(sample))
+	h.Quota = errQuota{}
+	h.Explain(httptest.NewRecorder(), explainReq(sample))
+
+	if logs.Len() == 0 {
+		t.Fatal("expected log output from the error paths")
+	}
+	for _, s := range []string{"Benali", "Lindenweg"} {
+		if strings.Contains(logs.String(), s) {
+			t.Fatalf("log contains %q: %s", s, logs.String())
+		}
+	}
+}

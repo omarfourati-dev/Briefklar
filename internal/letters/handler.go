@@ -55,25 +55,35 @@ func inputLabel(k extract.Kind) string {
 	return "unknown"
 }
 
-func demoForbidden(w http.ResponseWriter, r *http.Request) bool {
-	if c, _ := auth.ClaimsFrom(r.Context()); c.Role == "demo" {
+// authorize returns the caller's claims, or writes 401 (no claims) / 403 (demo role) and returns false.
+func authorize(w http.ResponseWriter, r *http.Request) (auth.Claims, bool) {
+	c, ok := auth.ClaimsFrom(r.Context())
+	if !ok {
+		respond.Problem(w, http.StatusUnauthorized, "Unauthorized", "Bitte anmelden.")
+		return c, false
+	}
+	if c.Role == "demo" {
 		respond.Problem(w, http.StatusForbidden, "Forbidden",
 			"Der Demo-Zugang zeigt nur die Beispielbriefe. Für eigene Briefe bitte einen Zugang anfragen.")
-		return true
+		return c, false
 	}
-	return false
+	return c, true
+}
+
+func (h *Handler) tooLarge(w http.ResponseWriter) {
+	h.Metrics.Previews.WithLabelValues("unknown", "too_large").Inc()
+	respond.Problem(w, http.StatusRequestEntityTooLarge, "Payload Too Large", "Die Datei ist größer als 10 MB.")
 }
 
 func (h *Handler) Preview(w http.ResponseWriter, r *http.Request) {
-	if demoForbidden(w, r) {
+	if _, ok := authorize(w, r); !ok {
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxUpload+64<<10)
-	if err := r.ParseMultipartForm(1 << 20); err != nil {
+	if err := r.ParseMultipartForm(maxUpload + 64<<10); err != nil {
 		var tooBig *http.MaxBytesError
 		if errors.As(err, &tooBig) {
-			h.Metrics.Previews.WithLabelValues("unknown", "too_large").Inc()
-			respond.Problem(w, http.StatusRequestEntityTooLarge, "Payload Too Large", "Die Datei ist größer als 10 MB.")
+			h.tooLarge(w)
 			return
 		}
 		respond.Problem(w, http.StatusBadRequest, "Bad Request", "Bitte eine Datei oder einen Text senden.")
@@ -82,11 +92,20 @@ func (h *Handler) Preview(w http.ResponseWriter, r *http.Request) {
 	defer r.MultipartForm.RemoveAll()
 
 	text, kind := r.FormValue("text"), extract.Text
-	if file, _, err := r.FormFile("file"); err == nil {
+	file, _, ferr := r.FormFile("file")
+	if ferr != nil && !errors.Is(ferr, http.ErrMissingFile) {
+		respond.Problem(w, http.StatusBadRequest, "Bad Request", "Die Datei konnte nicht gelesen werden.")
+		return
+	}
+	if ferr == nil {
 		data, err := io.ReadAll(file)
 		file.Close()
 		if err != nil {
 			respond.Problem(w, http.StatusBadRequest, "Bad Request", "Die Datei konnte nicht gelesen werden.")
+			return
+		}
+		if len(data) > maxUpload {
+			h.tooLarge(w)
 			return
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), extractTimeout)
@@ -122,18 +141,24 @@ func (h *Handler) Preview(w http.ResponseWriter, r *http.Request) {
 	for _, f := range res.Findings {
 		h.Metrics.Redactions.WithLabelValues(string(f.Kind)).Inc()
 	}
-	h.Metrics.Previews.WithLabelValues(string(kind), "ok").Inc()
+	h.Metrics.Previews.WithLabelValues(inputLabel(kind), "ok").Inc()
 	respond.JSON(w, http.StatusOK, map[string]any{"text": res.Text, "findings": res.Findings, "inputKind": kind})
 }
 
 func (h *Handler) Explain(w http.ResponseWriter, r *http.Request) {
-	if demoForbidden(w, r) {
+	c, ok := authorize(w, r)
+	if !ok {
 		return
 	}
 	var in struct {
 		Text string `json:"text"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 128<<10)).Decode(&in); err != nil {
+		var tooBig *http.MaxBytesError
+		if errors.As(err, &tooBig) {
+			respond.Problem(w, http.StatusRequestEntityTooLarge, "Payload Too Large", "Der Text ist zu groß.")
+			return
+		}
 		respond.Problem(w, http.StatusBadRequest, "Bad Request", "Erwartet: {\"text\": \"…\"}")
 		return
 	}
@@ -142,10 +167,11 @@ func (h *Handler) Explain(w http.ResponseWriter, r *http.Request) {
 		respond.Problem(w, http.StatusBadRequest, "Bad Request", "Der Text muss zwischen 20 und 20.000 Zeichen lang sein.")
 		return
 	}
-	c, _ := auth.ClaimsFrom(r.Context())
 	_, ok, err := h.Quota.TakeQuota(r.Context(), c.UserID, h.Now())
 	if err != nil {
-		respond.Problem(w, http.StatusInternalServerError, "Internal Server Error", "")
+		h.Metrics.Explanations.WithLabelValues("error").Inc()
+		h.Log.Error("quota check failed", "error", err)
+		respond.Problem(w, http.StatusInternalServerError, "Internal Server Error", "Die Erklärung ist gerade nicht möglich. Bitte später erneut versuchen.")
 		return
 	}
 	if !ok {
