@@ -8,7 +8,11 @@ const KEY = 'briefklar.session';
 export class AuthStore {
   private readonly session = signal<LoginResponse | null>(load());
   readonly user = computed(() => this.session()?.user ?? null);
-  readonly token = computed(() => this.session()?.token ?? null);
+  // Plain function (not computed): expiry is compared with the clock on every call.
+  readonly token = (): string | null => {
+    const s = this.session();
+    return s && new Date(s.expiresAt).getTime() > Date.now() ? s.token : null;
+  };
   readonly isDemo = computed(() => this.user()?.role === 'demo');
   readonly isAdmin = computed(() => this.user()?.role === 'admin');
 
