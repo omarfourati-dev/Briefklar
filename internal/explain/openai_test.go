@@ -1,13 +1,17 @@
 package explain
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -64,20 +68,11 @@ func TestSendsStructuredRequestAndParsesAnswer(t *testing.T) {
 	}
 }
 
-func TestProviderErrorIsNotLeaked(t *testing.T) {
-	srv := server(t, 401, `{"error":{"message":"Incorrect API key provided: ECHOED-KEY-FRAGMENT"}}`, nil)
-	defer srv.Close()
-
-	_, err := client(srv.URL).Explain(context.Background(), "text")
-	if !errors.Is(err, ErrUpstream) || strings.Contains(err.Error(), "ECHOED-KEY-FRAGMENT") {
-		t.Fatalf("err = %v", err)
-	}
-}
-
 func TestTimeout(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body) // lets the server notice the client hanging up
 		select {
-		case <-time.After(2 * time.Second):
+		case <-time.After(5 * time.Second):
 		case <-r.Context().Done():
 		}
 	}))
@@ -118,4 +113,90 @@ func TestFakeKeepsPlaceholders(t *testing.T) {
 	if err != nil || !strings.Contains(e.ReplyDraft, "[NAME_1]") || e.Deadline == nil {
 		t.Fatalf("got %+v %v", e, err)
 	}
+}
+
+func TestProviderErrorIsNotLeaked(t *testing.T) {
+	srv := server(t, 401, `{"error":{"message":"Incorrect API key provided: ECHOED-KEY-FRAGMENT"}}`, nil)
+	defer srv.Close()
+
+	var logs bytes.Buffer
+	c := client(srv.URL)
+	c.Log = slog.New(slog.NewTextHandler(&logs, nil))
+	_, err := c.Explain(context.Background(), "text")
+	if !errors.Is(err, ErrUpstream) || strings.Contains(err.Error(), "ECHOED-KEY-FRAGMENT") {
+		t.Fatalf("err = %v", err)
+	}
+	if strings.Contains(logs.String(), "ECHOED-KEY-FRAGMENT") || logs.Len() == 0 {
+		t.Fatalf("log = %q", logs.String())
+	}
+}
+
+func rawServer(body string) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, body)
+	}))
+}
+
+func TestRefusalIsUpstreamError(t *testing.T) {
+	srv := rawServer(`{"choices":[{"message":{"content":"","refusal":"I cannot help"}}]}`)
+	defer srv.Close()
+	if _, err := client(srv.URL).Explain(context.Background(), "text"); !errors.Is(err, ErrUpstream) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestEmptyChoicesIsUpstreamError(t *testing.T) {
+	srv := rawServer(`{"choices":[]}`)
+	defer srv.Close()
+	if _, err := client(srv.URL).Explain(context.Background(), "text"); !errors.Is(err, ErrUpstream) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestOversizedResponseIsUpstreamError(t *testing.T) {
+	padded := strings.Replace(answer, "Ausländerbehörde", strings.Repeat("a", 2<<20), 1)
+	content, _ := json.Marshal(padded)
+	body := `{"choices":[{"message":{"content":` + string(content) + `}}]}`
+	srv := rawServer(body)
+	defer srv.Close()
+
+	start := time.Now()
+	_, err := client(srv.URL).Explain(context.Background(), "text")
+	if !errors.Is(err, ErrUpstream) || time.Since(start) > 2*time.Second {
+		t.Fatalf("err = %v after %v", err, time.Since(start))
+	}
+}
+
+func TestSchemaIsStrictCompatible(t *testing.T) {
+	var walk func(path string, node any)
+	walk = func(path string, node any) {
+		m, ok := node.(map[string]any)
+		if !ok {
+			return
+		}
+		if m["type"] == "object" {
+			if m["additionalProperties"] != false {
+				t.Errorf("%s: additionalProperties must be false", path)
+			}
+			props, _ := m["properties"].(map[string]any)
+			req, _ := m["required"].([]string)
+			var keys []string
+			for k := range props {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			sortedReq := append([]string(nil), req...)
+			sort.Strings(sortedReq)
+			if !reflect.DeepEqual(keys, sortedReq) {
+				t.Errorf("%s: required %v != properties %v", path, sortedReq, keys)
+			}
+			for k, v := range props {
+				walk(path+"."+k, v)
+			}
+		}
+		if items, ok := m["items"]; ok {
+			walk(path+"[]", items)
+		}
+	}
+	walk("schema", schema)
 }

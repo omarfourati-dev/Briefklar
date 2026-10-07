@@ -11,6 +11,9 @@ import (
 	"net/http"
 )
 
+// maxResponseBytes bounds how much of a provider response is read.
+const maxResponseBytes = 1 << 20
+
 type OpenAI struct {
 	HTTP    *http.Client
 	BaseURL string
@@ -65,7 +68,8 @@ func (o *OpenAI) Explain(ctx context.Context, text string) (Explanation, error) 
 	})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, o.BaseURL+"/v1/chat/completions", bytes.NewReader(payload))
 	if err != nil {
-		return Explanation{}, err
+		// Not wrapping err: *url.Error contains the URL.
+		return Explanation{}, fmt.Errorf("%w: invalid request", ErrUpstream)
 	}
 	req.Header.Set("Authorization", "Bearer "+o.APIKey)
 	req.Header.Set("Content-Type", "application/json")
@@ -75,13 +79,13 @@ func (o *OpenAI) Explain(ctx context.Context, text string) (Explanation, error) 
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			return Explanation{}, ErrTimeout
 		}
-		o.Log.Warn("explain request failed", "error", err)
+		// Fixed message only: the raw *url.Error contains the URL.
+		o.Log.Warn("explain request failed", "reason", "network")
 		return Explanation{}, ErrUpstream
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		// Only the status is logged: provider bodies can echo parts of the API key.
-		_, _ = io.Copy(io.Discard, resp.Body)
 		o.Log.Warn("explain provider error", "status", resp.StatusCode)
 		return Explanation{}, fmt.Errorf("%w: status %d", ErrUpstream, resp.StatusCode)
 	}
@@ -93,13 +97,28 @@ func (o *OpenAI) Explain(ctx context.Context, text string) (Explanation, error) 
 			} `json:"message"`
 		} `json:"choices"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil || len(out.Choices) == 0 || out.Choices[0].Message.Refusal != nil {
-		return Explanation{}, ErrUpstream
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).Decode(&out); err != nil {
+		return Explanation{}, o.badAnswer(ctx, "unreadable response")
+	}
+	if len(out.Choices) == 0 {
+		return Explanation{}, o.badAnswer(ctx, "no choices")
+	}
+	if out.Choices[0].Message.Refusal != nil {
+		return Explanation{}, o.badAnswer(ctx, "refusal")
 	}
 	var e Explanation
 	if err := json.Unmarshal([]byte(out.Choices[0].Message.Content), &e); err != nil {
-		return Explanation{}, ErrUpstream
+		return Explanation{}, o.badAnswer(ctx, "invalid json in answer")
 	}
 	normalize(&e)
 	return e, nil
+}
+
+// badAnswer logs a fixed reason (never content) and maps a deadline hit during body reading to ErrTimeout.
+func (o *OpenAI) badAnswer(ctx context.Context, reason string) error {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return ErrTimeout
+	}
+	o.Log.Warn("explain bad answer", "reason", reason)
+	return ErrUpstream
 }
