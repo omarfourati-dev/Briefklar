@@ -9,6 +9,7 @@ import (
 	"net/mail"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/omarfourati-dev/briefklar/internal/auth"
 	"github.com/omarfourati-dev/briefklar/internal/respond"
@@ -56,13 +57,13 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	if in.DailyLimit != nil {
 		limit = *in.DailyLimit
 	}
-	_, mailErr := mail.ParseAddress(in.Email)
+	addr, mailErr := mail.ParseAddress(in.Email)
 	pwErr := auth.ValidatePassword(in.Password)
 	switch {
-	case mailErr != nil || len(in.Email) > 200:
+	case mailErr != nil || addr.Address != in.Email || len(in.Email) > 200:
 		respond.Problem(w, http.StatusBadRequest, "Bad Request", "Bitte eine gültige E-Mail-Adresse angeben.")
 		return
-	case in.Name == "" || len(in.Name) > 100:
+	case in.Name == "" || utf8.RuneCountInString(in.Name) > 100:
 		respond.Problem(w, http.StatusBadRequest, "Bad Request", "Bitte einen Namen angeben (höchstens 100 Zeichen).")
 		return
 	case pwErr != nil:
@@ -101,7 +102,11 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	c, _ := auth.ClaimsFrom(r.Context())
+	c, ok := auth.ClaimsFrom(r.Context())
+	if !ok {
+		respond.Problem(w, http.StatusUnauthorized, "Unauthorized", "Bitte anmelden.")
+		return
+	}
 	if id == c.UserID && !*in.Enabled {
 		respond.Problem(w, http.StatusConflict, "Conflict", "Das eigene Konto kann nicht gesperrt werden.")
 		return
