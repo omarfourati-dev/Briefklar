@@ -53,6 +53,8 @@ func Load(getenv func(string) string) (Config, error) {
 		return Config{}, errors.New("JWT_SECRET must be at least 32 bytes")
 	case c.Explainer != "openai" && c.Explainer != "fake":
 		return Config{}, errors.New(`EXPLAINER must be "openai" or "fake"`)
+	case c.Explainer == "openai" && (c.OpenAIKey == "" || c.OpenAIKey == "not-configured"):
+		return Config{}, errors.New(`OPENAI_API_KEY is required when EXPLAINER is "openai" (use EXPLAINER=fake without a key)`)
 	}
 	return c, nil
 }

@@ -9,7 +9,7 @@ func env(m map[string]string) func(string) string { return func(k string) string
 
 func TestDefaults(t *testing.T) {
 	c, err := Load(env(map[string]string{
-		"DATABASE_URL": "postgres://x", "JWT_SECRET": strings.Repeat("s", 32),
+		"DATABASE_URL": "postgres://x", "JWT_SECRET": strings.Repeat("s", 32), "OPENAI_API_KEY": "k",
 	}))
 	if err != nil {
 		t.Fatal(err)
@@ -22,15 +22,25 @@ func TestDefaults(t *testing.T) {
 
 func TestValidation(t *testing.T) {
 	cases := map[string]map[string]string{
-		"missing database": {"JWT_SECRET": strings.Repeat("s", 32)},
-		"short secret":     {"DATABASE_URL": "postgres://x", "JWT_SECRET": "short"},
-		"bad explainer":    {"DATABASE_URL": "postgres://x", "JWT_SECRET": strings.Repeat("s", 32), "EXPLAINER": "magic"},
-		"bad limit":        {"DATABASE_URL": "postgres://x", "JWT_SECRET": strings.Repeat("s", 32), "DAILY_LIMIT": "x"},
+		"missing database":   {"JWT_SECRET": strings.Repeat("s", 32)},
+		"short secret":       {"DATABASE_URL": "postgres://x", "JWT_SECRET": "short"},
+		"bad explainer":      {"DATABASE_URL": "postgres://x", "JWT_SECRET": strings.Repeat("s", 32), "EXPLAINER": "magic"},
+		"bad limit":          {"DATABASE_URL": "postgres://x", "JWT_SECRET": strings.Repeat("s", 32), "DAILY_LIMIT": "x"},
+		"openai without key": {"DATABASE_URL": "postgres://x", "JWT_SECRET": strings.Repeat("s", 32), "EXPLAINER": "openai"},
+		"openai placeholder key": {"DATABASE_URL": "postgres://x", "JWT_SECRET": strings.Repeat("s", 32),
+			"EXPLAINER": "openai", "OPENAI_API_KEY": "not-configured"},
 	}
 	for name, m := range cases {
 		if _, err := Load(env(m)); err == nil {
 			t.Errorf("%s: expected error", name)
 		}
+	}
+}
+
+func TestFakeNeedsNoKey(t *testing.T) {
+	if _, err := Load(env(map[string]string{"DATABASE_URL": "postgres://x", "JWT_SECRET": strings.Repeat("s", 32),
+		"EXPLAINER": "fake", "OPENAI_API_KEY": "not-configured"})); err != nil {
+		t.Fatal(err)
 	}
 }
 
