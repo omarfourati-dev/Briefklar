@@ -15,7 +15,8 @@
 1. Upload a photo or PDF (or paste text). Tesseract (German) and poppler extract the text on the server.
 2. Redaction replaces names, addresses, IBAN, tax ID, file numbers, phone numbers, e-mail and birth dates with
    placeholders such as [NAME_1]. The user sees a preview and can redact more words by clicking them.
-3. Only the redacted text goes to the LLM (structured JSON output). The browser puts the original values back.
+3. Only the redacted text is sent to OpenAI for the explanation (structured JSON output). The browser puts the
+   original values back.
 
 ## Technology
 - Backend: Go (net/http, pgx, slog, embed), Tesseract, poppler, PostgreSQL (accounts and usage counters only)
