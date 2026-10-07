@@ -7,6 +7,7 @@ import (
 	"flag"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -39,9 +40,24 @@ func main() {
 }
 
 func checkHealth() int {
+	addr := os.Getenv("ADDR")
+	if addr == "" {
+		addr = ":8080"
+	}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return 1
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "127.0.0.1"
+	}
 	client := http.Client{Timeout: 3 * time.Second}
-	resp, err := client.Get("http://127.0.0.1:8080/healthz")
-	if err != nil || resp.StatusCode != http.StatusOK {
+	resp, err := client.Get("http://" + net.JoinHostPort(host, port) + "/healthz")
+	if err != nil {
+		return 1
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
 		return 1
 	}
 	return 0
@@ -93,7 +109,7 @@ func run(log *slog.Logger) error {
 		Log:     log,
 	})
 	srv := &http.Server{Addr: cfg.Addr, Handler: handler, ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout: 2 * time.Minute, WriteTimeout: 2 * time.Minute, IdleTimeout: 2 * time.Minute}
+		ReadTimeout: 2 * time.Minute, WriteTimeout: 3 * time.Minute, IdleTimeout: 2 * time.Minute}
 
 	errs := make(chan error, 1)
 	go func() { errs <- srv.ListenAndServe() }()
@@ -103,9 +119,15 @@ func run(log *slog.Logger) error {
 	case <-ctx.Done():
 	}
 	log.Info("shutting down")
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 110*time.Second)
 	defer cancel()
-	if err := srv.Shutdown(shutdownCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	err = srv.Shutdown(shutdownCtx)
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		log.Warn("shutdown timed out, closing remaining connections")
+		_ = srv.Close()
+		return nil
+	case err != nil && !errors.Is(err, http.ErrServerClosed):
 		return err
 	}
 	return nil

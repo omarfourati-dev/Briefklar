@@ -55,9 +55,11 @@ func New(d Deps) http.Handler {
 		mux.Handle("POST /api/users", admin(d.Users.Create))
 		mux.Handle("PATCH /api/users/{id}", admin(d.Users.Update))
 	}
-	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
+	apiNotFound := func(w http.ResponseWriter, r *http.Request) {
 		respond.Problem(w, http.StatusNotFound, "Not Found", "")
-	})
+	}
+	mux.HandleFunc("/api/", apiNotFound)
+	mux.HandleFunc("/api", apiNotFound) // without it the mux redirects /api to /api/
 	mux.Handle("/", staticHandler(d.Static))
 
 	return securityHeaders(logRequests(d.Log, mux))
@@ -81,6 +83,9 @@ type statusRecorder struct {
 }
 
 func (s *statusRecorder) WriteHeader(code int) { s.status = code; s.ResponseWriter.WriteHeader(code) }
+
+// Unwrap lets http.ResponseController reach the real writer (Flush, deadlines).
+func (s *statusRecorder) Unwrap() http.ResponseWriter { return s.ResponseWriter }
 
 // logRequests logs method, path, status and duration – never bodies or query strings.
 func logRequests(log *slog.Logger, next http.Handler) http.Handler {

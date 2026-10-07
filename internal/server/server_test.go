@@ -1,7 +1,9 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -20,15 +22,21 @@ type pinger struct{ err error }
 func (p pinger) Ping(context.Context) error { return p.err }
 
 func newServer(t *testing.T) http.Handler {
-	tok, _ := auth.NewTokens([]byte(strings.Repeat("k", 32)), time.Hour)
+	return newServerWith(t, pinger{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+}
+
+func newServerWith(t *testing.T, p pinger, log *slog.Logger) http.Handler {
+	tok, err := auth.NewTokens([]byte(strings.Repeat("k", 32)), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
 	files := fstest.MapFS{
 		"index.html":           {Data: []byte("<h1>Landing</h1>")},
 		"robots.txt":           {Data: []byte("User-agent: *")},
 		"app/index.html":       {Data: []byte("<app-root></app-root>")},
 		"app/main-ABCD1234.js": {Data: []byte("console.log(1)")},
 	}
-	return New(Deps{Store: pinger{}, Auth: auth.NewService(nil, tok), Metrics: metrics.New(), Static: files,
-		Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	return New(Deps{Store: p, Auth: auth.NewService(nil, tok), Metrics: metrics.New(), Static: files, Log: log})
 }
 
 func get(h http.Handler, path string) *httptest.ResponseRecorder {
@@ -82,5 +90,50 @@ func TestSecurityHeadersAndAPI(t *testing.T) {
 	}
 	if rec := get(h, "/metrics"); rec.Code != 200 || !strings.Contains(rec.Body.String(), "go_goroutines") {
 		t.Errorf("metrics: %d", rec.Code)
+	}
+}
+
+func TestSecurityHeaderValues(t *testing.T) {
+	rec := get(newServer(t), "/")
+	want := map[string]string{
+		"Content-Security-Policy": "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; " +
+			"frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
+		"X-Content-Type-Options": "nosniff",
+		"Referrer-Policy":        "no-referrer",
+		"Permissions-Policy":     "camera=(self), microphone=(), geolocation=()",
+	}
+	for k, v := range want {
+		if got := rec.Header().Get(k); got != v {
+			t.Errorf("%s = %q, want %q", k, got, v)
+		}
+	}
+}
+
+func TestAPIWithoutSlashIsProblem404(t *testing.T) {
+	if rec := get(newServer(t), "/api"); rec.Code != 404 || rec.Header().Get("Content-Type") != "application/problem+json" {
+		t.Errorf("/api: %d %s", rec.Code, rec.Header().Get("Content-Type"))
+	}
+}
+
+func TestHealthzDatabaseDown(t *testing.T) {
+	h := newServerWith(t, pinger{err: errors.New("down")}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if rec := get(h, "/healthz"); rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("healthz: %d", rec.Code)
+	}
+}
+
+func TestRequestLogHasNoQueryString(t *testing.T) {
+	var buf bytes.Buffer
+	h := newServerWith(t, pinger{}, slog.New(slog.NewTextHandler(&buf, nil)))
+	get(h, "/api/nope?token=secret")
+	get(h, "/app/neu?x=geheim")
+	out := buf.String()
+	if !strings.Contains(out, "/api/nope") || !strings.Contains(out, "/app/neu") {
+		t.Fatalf("requests not logged: %q", out)
+	}
+	for _, bad := range []string{"secret", "geheim", "token="} {
+		if strings.Contains(out, bad) {
+			t.Errorf("log contains %q: %s", bad, out)
+		}
 	}
 }
