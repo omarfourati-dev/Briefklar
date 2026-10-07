@@ -7,13 +7,17 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
+	"image"
+	_ "image/jpeg"
+	_ "image/png"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 )
 
@@ -32,6 +36,34 @@ var (
 
 // minLetters: below this the OCR result is noise, not a letter.
 const minLetters = 40
+
+const (
+	maxPixels      = 40_000_000 // decoded size of a photo we are willing to OCR
+	maxStdout      = 2 << 20
+	maxStderr      = 4 << 10
+	stderrKeep     = 500
+	toolWaitDelay  = 2 * time.Second
+	renderLongSide = "2500"
+)
+
+// ToolError reports a failed external tool. Error() carries only the tool name and exit status;
+// the tool's stderr (which may echo document content) is available via Stderr() for the server log only.
+type ToolError struct {
+	Tool   string
+	Err    error
+	stderr string
+}
+
+func (e *ToolError) Error() string { return e.Tool + ": " + e.Err.Error() }
+func (e *ToolError) Unwrap() error { return e.Err }
+
+// Stderr returns the tool's stderr, truncated to 500 bytes.
+func (e *ToolError) Stderr() string {
+	if len(e.stderr) > stderrKeep {
+		return e.stderr[:stderrKeep]
+	}
+	return e.stderr
+}
 
 func Detect(data []byte) (Kind, error) {
 	switch {
@@ -61,6 +93,12 @@ func (t *Tools) Extract(ctx context.Context, data []byte) (string, Kind, error) 
 	if err != nil {
 		return "", "", err
 	}
+	if kind == Image && !(len(data) >= 12 && string(data[8:12]) == "WEBP") {
+		cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+		if err != nil || cfg.Width*cfg.Height > maxPixels {
+			return "", kind, ErrUnsupported
+		}
+	}
 	dir, err := os.MkdirTemp("", "briefklar-*")
 	if err != nil {
 		return "", kind, err
@@ -89,20 +127,31 @@ func (t *Tools) pdf(ctx context.Context, dir string, data []byte) (string, error
 	if err := os.WriteFile(in, data, 0o600); err != nil {
 		return "", err
 	}
-	last := strconv.Itoa(t.MaxPages)
-	text, err := run(ctx, t.PdfToText, "-layout", "-l", last, in, "-")
-	if err == nil && letters(text) >= minLetters {
+	last := strconv.Itoa(max(t.MaxPages, 1))
+	text, textErr := t.run(ctx, nil, t.PdfToText, "-layout", "-l", last, in, "-")
+	if textErr == nil && letters(text) >= minLetters {
 		return text, nil
 	}
-	// No text layer: scanned PDF. Render the first pages and read them like photos.
-	if _, err := run(ctx, t.PdfToPPM, "-r", "200", "-png", "-l", last, in, filepath.Join(dir, "page")); err != nil {
+	// No (usable) text layer: scanned PDF. Render the first pages and read them like photos.
+	ocr, err := t.ocrPages(ctx, dir, in, last)
+	if err != nil {
+		return "", errors.Join(textErr, err)
+	}
+	if letters(ocr) >= minLetters || letters(ocr) >= letters(text) {
+		return ocr, nil
+	}
+	return text, nil
+}
+
+func (t *Tools) ocrPages(ctx context.Context, dir, in, last string) (string, error) {
+	if _, err := t.run(ctx, nil, t.PdfToPPM, "-r", "200", "-scale-to", renderLongSide, "-png", "-l", last, in, filepath.Join(dir, "page")); err != nil {
 		return "", err
 	}
 	pages, _ := filepath.Glob(filepath.Join(dir, "page*.png"))
 	sort.Strings(pages)
 	var all []string
 	for _, p := range pages {
-		page, err := run(ctx, t.Tesseract, p, "stdout", "-l", "deu", "--psm", "3")
+		page, err := t.tesseract(ctx, p)
 		if err != nil {
 			return "", err
 		}
@@ -111,23 +160,49 @@ func (t *Tools) pdf(ctx context.Context, dir string, data []byte) (string, error
 	return strings.Join(all, "\n"), nil
 }
 
+func (t *Tools) tesseract(ctx context.Context, file string) (string, error) {
+	return t.run(ctx, []string{"OMP_THREAD_LIMIT=1"}, t.Tesseract, file, "stdout", "-l", "deu", "--psm", "3")
+}
+
 func (t *Tools) image(ctx context.Context, dir string, data []byte) (string, error) {
 	in := filepath.Join(dir, "in.img")
 	if err := os.WriteFile(in, data, 0o600); err != nil {
 		return "", err
 	}
-	return run(ctx, t.Tesseract, in, "stdout", "-l", "deu", "--psm", "3")
+	return t.tesseract(ctx, in)
 }
 
-// run returns stdout; stderr only goes into the error (for the server log), never to the client.
-func run(ctx context.Context, name string, args ...string) (string, error) {
-	var stdout, stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, name, args...)
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("%s: %w: %s", name, err, strings.TrimSpace(stderr.String()))
+// limitedWriter keeps the first n bytes and silently discards the rest.
+type limitedWriter struct {
+	buf bytes.Buffer
+	n   int
+}
+
+func (w *limitedWriter) Write(p []byte) (int, error) {
+	if room := w.n - w.buf.Len(); room > 0 {
+		w.buf.Write(p[:min(len(p), room)])
 	}
-	return stdout.String(), nil
+	return len(p), nil
+}
+
+var _ io.Writer = (*limitedWriter)(nil)
+
+// run returns stdout; stderr only goes into the ToolError (for the server log), never into its message.
+func (t *Tools) run(ctx context.Context, env []string, name string, args ...string) (string, error) {
+	stdout, stderr := &limitedWriter{n: maxStdout}, &limitedWriter{n: maxStderr}
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Stdout, cmd.Stderr = stdout, stderr
+	cmd.WaitDelay = toolWaitDelay
+	if env != nil {
+		cmd.Env = append(os.Environ(), env...)
+	}
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			err = ctx.Err()
+		}
+		return "", &ToolError{Tool: name, Err: err, stderr: strings.TrimSpace(stderr.buf.String())}
+	}
+	return stdout.buf.String(), nil
 }
 
 func letters(s string) int {
