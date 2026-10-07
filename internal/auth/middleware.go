@@ -47,3 +47,7 @@ func unauthorized(w http.ResponseWriter) {
 	w.Header().Set("WWW-Authenticate", "Bearer")
 	respond.Problem(w, http.StatusUnauthorized, "Unauthorized", "Bitte anmelden.")
 }
+
+func unavailable(w http.ResponseWriter) {
+	respond.Problem(w, http.StatusServiceUnavailable, "Service Unavailable", "Bitte später erneut versuchen.")
+}

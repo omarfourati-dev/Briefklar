@@ -2,6 +2,7 @@ package auth
 
 import (
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"strconv"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/omarfourati-dev/briefklar/internal/respond"
+	"github.com/omarfourati-dev/briefklar/internal/store"
 )
 
 type me struct {
@@ -27,16 +29,21 @@ func (s *Service) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ip := clientIP(r)
-	if ok, retry := s.Throttle.Allow(ip, in.Email); !ok {
+	if ok, retry := s.Throttle.Reserve(ip, in.Email); !ok {
 		s.OnLogin("throttled")
 		w.Header().Set("Retry-After", strconv.Itoa(int(retry.Seconds())+1))
 		respond.Problem(w, http.StatusTooManyRequests, "Too Many Requests", "Zu viele Fehlversuche. Bitte in 15 Minuten erneut versuchen.")
 		return
 	}
-	u, ok := s.authenticate(r.Context(), in.Email, in.Password)
+	u, ok, err := s.authenticate(r.Context(), in.Email, in.Password)
+	if err != nil {
+		s.Throttle.Release(ip, in.Email)
+		s.Log.Error("login lookup failed", "error", err)
+		unavailable(w)
+		return
+	}
 	if !ok {
-		s.Throttle.Fail(ip, in.Email)
-		s.OnLogin("failed")
+		s.OnLogin("failed") // the reservation made by Reserve stays and counts as the failure
 		respond.Problem(w, http.StatusUnauthorized, "Login failed", "E-Mail oder Passwort ist falsch.")
 		return
 	}
@@ -67,16 +74,31 @@ func (s *Service) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		CurrentPassword string `json:"currentPassword"`
 		NewPassword     string `json:"newPassword"`
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&in); err != nil || len(in.NewPassword) < 12 || len(in.NewPassword) > 200 {
-		respond.Problem(w, http.StatusBadRequest, "Bad Request", "Das neue Passwort braucht mindestens 12 Zeichen.")
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&in); err != nil {
+		respond.Problem(w, http.StatusBadRequest, "Bad Request", "Ungültige Anfrage.")
+		return
+	}
+	if err := ValidatePassword(in.NewPassword); err != nil {
+		respond.Problem(w, http.StatusBadRequest, "Bad Request", err.Error())
 		return
 	}
 	u, err := s.Users.UserByID(r.Context(), c.UserID)
-	if err != nil {
+	if errors.Is(err, store.ErrNotFound) {
 		unauthorized(w)
 		return
 	}
-	if _, ok := s.authenticate(r.Context(), u.Email, in.CurrentPassword); !ok {
+	if err != nil {
+		s.Log.Error("password change lookup failed", "error", err)
+		unavailable(w)
+		return
+	}
+	_, ok, err := s.authenticate(r.Context(), u.Email, in.CurrentPassword)
+	if err != nil {
+		s.Log.Error("password change lookup failed", "error", err)
+		unavailable(w)
+		return
+	}
+	if !ok {
 		respond.Problem(w, http.StatusBadRequest, "Bad Request", "Das aktuelle Passwort ist falsch.")
 		return
 	}

@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -164,5 +165,86 @@ func TestBootstrapAndDemo(t *testing.T) {
 	demo := login(t, h, DemoEmail, DemoPassword)
 	if rec := call(h, "POST", "/api/auth/password", demo, `{"currentPassword":"`+DemoPassword+`","newPassword":"ein-neues-passwort"}`); rec.Code != 403 {
 		t.Fatalf("demo password change: %d", rec.Code)
+	}
+}
+
+type failingUsers struct{ Users }
+
+func (failingUsers) UserByEmail(context.Context, string) (store.User, error) {
+	return store.User{}, errors.New("db down")
+}
+
+func TestDatabaseErrorIs503AndNotThrottled(t *testing.T) {
+	svc, _, _ := setup(t)
+	svc.Users = failingUsers{svc.Users}
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/auth/login", svc.Login)
+	rec := call(mux, "POST", "/api/auth/login", "", `{"email":"anna@x.de","password":"`+pw+`"}`)
+	if rec.Code != 503 {
+		t.Fatalf("got %d %s", rec.Code, rec.Body)
+	}
+	if len(svc.Throttle.hits) != 0 {
+		t.Fatalf("throttle counted a database error: %v", svc.Throttle.hits)
+	}
+}
+
+func TestPasswordLengthRules(t *testing.T) {
+	_, st, h := setup(t)
+	create(t, st, "anna@x.de", "user")
+	token := login(t, h, "anna@x.de", pw)
+	for name, np := range map[string]string{"80 bytes": strings.Repeat("a", 80), "11 chars": "elf-zeichen"} {
+		if rec := call(h, "POST", "/api/auth/password", token, `{"currentPassword":"`+pw+`","newPassword":"`+np+`"}`); rec.Code != 400 {
+			t.Errorf("%s: %d", name, rec.Code)
+		}
+	}
+	if rec := call(h, "POST", "/api/auth/password", token, `{"currentPassword":"`+pw+`","newPassword":"äöüäöüäöüäöü"}`); rec.Code != 204 {
+		t.Fatalf("12 umlauts: %d %s", rec.Code, rec.Body)
+	}
+	if err := Bootstrap(context.Background(), st, "b@x.de", strings.Repeat("a", 80), false, 20); err == nil {
+		t.Fatal("80-byte admin password accepted")
+	}
+}
+
+func TestConcurrentWrongLoginsAreThrottled(t *testing.T) {
+	_, st, h := setup(t)
+	create(t, st, "anna@x.de", "user")
+	codes := make(chan int, 10)
+	for i := 0; i < 10; i++ {
+		go func() {
+			codes <- call(h, "POST", "/api/auth/login", "", `{"email":"anna@x.de","password":"wrong-password-1"}`).Code
+		}()
+	}
+	n401, n429 := 0, 0
+	for i := 0; i < 10; i++ {
+		switch <-codes {
+		case 401:
+			n401++
+		case 429:
+			n429++
+		}
+	}
+	if n401 != 5 || n429 != 5 {
+		t.Fatalf("401=%d 429=%d", n401, n429)
+	}
+}
+
+func TestBootstrapHalfConfiguredAdminAndDemoOff(t *testing.T) {
+	_, st, h := setup(t)
+	ctx := context.Background()
+	if err := Bootstrap(ctx, st, "admin@x.de", "", false, 20); err == nil {
+		t.Fatal("email without password accepted")
+	}
+	if err := Bootstrap(ctx, st, "", "admin-password-123", false, 20); err == nil {
+		t.Fatal("password without email accepted")
+	}
+	if err := Bootstrap(ctx, st, "", "", true, 20); err != nil {
+		t.Fatal(err)
+	}
+	login(t, h, DemoEmail, DemoPassword)
+	if err := Bootstrap(ctx, st, "", "", false, 20); err != nil {
+		t.Fatal(err)
+	}
+	if rec := call(h, "POST", "/api/auth/login", "", `{"email":"`+DemoEmail+`","password":"`+DemoPassword+`"}`); rec.Code != 401 {
+		t.Fatalf("demo still enabled: %d", rec.Code)
 	}
 }

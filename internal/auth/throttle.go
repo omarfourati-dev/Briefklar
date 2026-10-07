@@ -42,6 +42,50 @@ func (t *Throttle) Allow(ip, email string) (bool, time.Duration) {
 	return true, 0
 }
 
+// Reserve checks the limits and counts the attempt before the password is verified, so parallel requests
+// cannot all slip past the limit. A failed login keeps the reservation; Success and Release give it back.
+func (t *Throttle) Reserve(ip, email string) (bool, time.Duration) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	ipKey, acctKey := keys(ip, email)
+	for key, limit := range map[string]int{ipKey: t.perIP, acctKey: t.perAccount} {
+		if b := t.live(key); b != nil && b.count >= limit {
+			return false, b.start.Add(t.window).Sub(t.now())
+		}
+	}
+	if len(t.hits) > 10000 {
+		t.prune()
+	}
+	t.add(ipKey)
+	t.add(acctKey)
+	return true, 0
+}
+
+// Release gives back a reservation without counting a failure (e.g. when the database was unavailable).
+func (t *Throttle) Release(ip, email string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	ipKey, acctKey := keys(ip, email)
+	t.sub(ipKey)
+	t.sub(acctKey)
+}
+
+func (t *Throttle) add(key string) {
+	if b := t.live(key); b != nil {
+		b.count++
+	} else {
+		t.hits[key] = &bucket{count: 1, start: t.now()}
+	}
+}
+
+func (t *Throttle) sub(key string) {
+	if b := t.live(key); b != nil {
+		if b.count--; b.count <= 0 {
+			delete(t.hits, key)
+		}
+	}
+}
+
 func (t *Throttle) Fail(ip, email string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -61,8 +105,9 @@ func (t *Throttle) Fail(ip, email string) {
 func (t *Throttle) Success(ip, email string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	_, acctKey := keys(ip, email)
+	ipKey, acctKey := keys(ip, email)
 	delete(t.hits, acctKey)
+	t.sub(ipKey) // the IP counter only keeps failures, so the reservation of this attempt goes back
 }
 
 func (t *Throttle) live(key string) *bucket {

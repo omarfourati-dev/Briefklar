@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"github.com/golang-jwt/jwt/v5"
 	"strings"
 	"testing"
 	"time"
@@ -78,4 +79,52 @@ func TestThrottleSuccessResetsAccount(t *testing.T) {
 	if ok, _ := th.Allow("2.2.2.2", "a@b.de"); !ok {
 		t.Fatal("success must reset the account counter")
 	}
+}
+
+func TestTokensRejectNoneWrongIssuerMissingExp(t *testing.T) {
+	secret := []byte(strings.Repeat("k", 32))
+	tok, _ := NewTokens(secret, time.Hour)
+	exp := jwt.NewNumericDate(time.Now().Add(time.Hour))
+	cases := map[string]string{}
+	none, _ := jwt.NewWithClaims(jwt.SigningMethodNone, tokenClaims{RegisteredClaims: jwt.RegisteredClaims{
+		Issuer: issuer, Subject: "u1", ExpiresAt: exp}}).SignedString(jwt.UnsafeAllowNoneSignatureType)
+	cases["alg none"] = none
+	cases["wrong issuer"], _ = jwt.NewWithClaims(jwt.SigningMethodHS256, tokenClaims{RegisteredClaims: jwt.RegisteredClaims{
+		Issuer: "other", Subject: "u1", ExpiresAt: exp}}).SignedString(secret)
+	cases["missing exp"], _ = jwt.NewWithClaims(jwt.SigningMethodHS256, tokenClaims{RegisteredClaims: jwt.RegisteredClaims{
+		Issuer: issuer, Subject: "u1"}}).SignedString(secret)
+	for name, s := range cases {
+		if _, err := tok.Parse(s); err == nil {
+			t.Errorf("%s accepted", name)
+		}
+	}
+}
+
+func TestValidatePassword(t *testing.T) {
+	if ValidatePassword("elf-zeichen") == nil {
+		t.Error("11 chars accepted")
+	}
+	if err := ValidatePassword("äöüäöüäöüäöü"); err != nil {
+		t.Errorf("12 umlauts (24 bytes) rejected: %v", err)
+	}
+	if ValidatePassword(strings.Repeat("a", 73)) == nil || ValidatePassword(strings.Repeat("a", 72)) != nil {
+		t.Error("72 bytes is the limit")
+	}
+}
+
+func TestThrottleReserveCountsBeforeVerification(t *testing.T) {
+	th := NewThrottle()
+	for i := 0; i < 5; i++ {
+		if ok, _ := th.Reserve("3.3.3.3", "a@b.de"); !ok {
+			t.Fatalf("reservation %d refused", i)
+		}
+	}
+	if ok, _ := th.Reserve("3.3.3.3", "a@b.de"); ok {
+		t.Fatal("6th reservation must be refused")
+	}
+	th.Success("3.3.3.3", "a@b.de")
+	if ok, _ := th.Reserve("3.3.3.3", "a@b.de"); !ok {
+		t.Fatal("success must free the account")
+	}
+	th.Release("3.3.3.3", "a@b.de")
 }
