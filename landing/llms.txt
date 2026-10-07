@@ -1,0 +1,22 @@
+# Briefklar
+
+> Briefklar explains German authority letters (immigration office, tax office, health insurance, broadcasting
+> fee) in plain language in German, English, French and Arabic, with the deadline as a calendar file, a checklist
+> and a reply draft. OCR and redaction of personal data run on the server before the text reaches the LLM; nothing
+> is stored. A portfolio project by Omar Fourati with public source code. Not legal advice.
+
+- App and demo (read-only demo account with three example letters): https://briefklar.omarfourati.de/app/login
+- Source code: https://github.com/omarfourati-dev/Briefklar
+- Author: Omar Fourati, Full-Stack Developer – https://omarfourati.de
+
+## How it works
+1. Upload a photo or PDF (or paste text). Tesseract (German) and poppler extract the text on the server.
+2. Redaction replaces names, addresses, IBAN, tax ID, file numbers, phone numbers, e-mail and birth dates with
+   placeholders such as [NAME_1]. The user sees a preview and can redact more words by clicking them.
+3. Only the redacted text goes to the LLM (structured JSON output). The browser puts the original values back.
+
+## Technology
+- Backend: Go (net/http, pgx, slog, embed), Tesseract, poppler, PostgreSQL (accounts and usage counters only)
+- Frontend: Angular (standalone components, signals), Tailwind CSS, right-to-left layout for Arabic
+- Quality: Go table tests, testcontainers-go, Angular unit tests, Playwright end-to-end tests in CI
+- Operations: Docker, GitHub Actions, Caddy, Prometheus and Grafana with alerts
