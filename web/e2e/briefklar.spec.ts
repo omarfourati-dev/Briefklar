@@ -9,11 +9,11 @@ test('landing page explains Briefklar and leads to the demo', async ({ page, req
   await page.goto('/');
   await expect(page).toHaveTitle(/Briefklar/);
   await expect(page.getByRole('heading', { level: 1 })).toContainText('Was will das Amt');
-  await expect(page.getByText('Keine Rechtsberatung').first()).toBeVisible();
+  await expect(page.getByText(DISCLAIMER).first()).toBeVisible();
   JSON.parse((await page.locator('script[type="application/ld+json"]').first().textContent()) ?? '');
   await page.getByRole('link', { name: 'Demo ansehen' }).first().click();
   await expect(page.getByRole('button', { name: 'Als Demo anmelden' })).toBeVisible();
-  await expect(page.getByText(DISCLAIMER)).toBeVisible();
+  await expect(page.getByText(DISCLAIMER).first()).toBeVisible();
   expect((await request.get('/llms.txt')).ok()).toBeTruthy();
   expect((await request.get('/healthz')).ok()).toBeTruthy();
   expect((await request.get('/metrics')).ok()).toBeTruthy(); // direct; Caddy blocks it in production
@@ -60,7 +60,7 @@ test('a user pastes a letter, sees the redaction and gets an explanation with th
   await page.getByLabel('Passwort').fill(user.password);
   await page.getByRole('button', { name: 'Anmelden', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Neuer Brief' })).toBeVisible();
-  await expect(page.getByText(DISCLAIMER)).toBeVisible();
+  await expect(page.getByText(DISCLAIMER).first()).toBeVisible();
   await expect(page.getByText('Foto aufnehmen')).toBeVisible();
   await expect(page.getByText('Datei wählen')).toBeVisible();
 
@@ -69,6 +69,9 @@ test('a user pastes a letter, sees the redaction and gets an explanation with th
   await page.getByTestId('preview').click();
   await expect(page.getByText('Vorschau: das bekommt die KI')).toBeVisible();
   await expect(page.getByText('DE89 3704 0044 0532 0130 00')).toHaveCount(0);
+  const preview = page.getByTestId('preview-text');
+  await expect(preview).toContainText(/\[[A-Z_]+_\d+\]/);
+  await expect(preview).not.toContainText('Benali');
   await page.getByTestId('explain').click();
   await expect(page.getByText('Musterbehörde (Testmodus)')).toBeVisible();
   await expect(page.getByLabel('Antwort-Entwurf')).toHaveValue(/Karim Benali/);

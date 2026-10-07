@@ -6,3 +6,9 @@ web/playwright-report
 static/dist/*
 !static/dist/.gitkeep
 .env
+**/.env*
+web/.angular
+.claude
+.superpowers
+web/playwright-report
+web/test-results
