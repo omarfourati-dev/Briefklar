@@ -1,0 +1,96 @@
+name: CI & Deploy – briefklar.omarfourati.de
+
+# No pull_request trigger: code from forks must never run on the self-hosted runner.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-production-briefklar
+  cancel-in-progress: false
+
+env:
+  DEPLOY_DIR: /home/briefklar
+
+jobs:
+  test:
+    name: Tests
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    name: Deploy to Production
+    runs-on: self-hosted
+    environment: production
+    needs: [test]
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+        with: { persist-credentials: false }
+
+      - name: Sync code to deploy directory
+        run: |
+          mkdir -p "$DEPLOY_DIR"
+          rsync -rlD --no-owner --no-group --delete --exclude='.git' --exclude='.env' --exclude='web/node_modules' \
+            "$GITHUB_WORKSPACE/" "$DEPLOY_DIR/"
+
+      - name: Ensure Docker network 'web' exists
+        run: docker network create web 2>/dev/null || echo "Network 'web' already exists."
+
+      - name: Create database role and database
+        # The password reaches psql as an inherited environment variable and is read with \getenv,
+        # so it never appears in a command line, process list or log.
+        env:
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+        run: |
+          if [ -z "$DB_PASSWORD" ]; then echo "::error::Secret DB_PASSWORD is missing"; exit 1; fi
+          docker exec -i -e DB_PASSWORD zentrades-postgres psql -v ON_ERROR_STOP=1 -U zentrades -d postgres <<'SQL'
+          \getenv pw DB_PASSWORD
+          SELECT format('CREATE ROLE briefklar LOGIN PASSWORD %L', :'pw')
+            WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'briefklar') \gexec
+          SELECT format('ALTER ROLE briefklar PASSWORD %L', :'pw') \gexec
+          SELECT 'CREATE DATABASE briefklar OWNER briefklar'
+            WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'briefklar') \gexec
+          SQL
+
+      - name: Write .env
+        env:
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
+          ADMIN_EMAIL: ${{ vars.ADMIN_EMAIL }}
+        run: |
+          if [ ${#JWT_SECRET} -lt 32 ]; then echo "::error::Secret JWT_SECRET is missing or too short"; exit 1; fi
+          {
+            printf 'DB_PASSWORD=%s\n' "$DB_PASSWORD"
+            printf 'OPENAI_API_KEY=%s\n' "$OPENAI_API_KEY"
+            printf 'JWT_SECRET=%s\n' "$JWT_SECRET"
+            [ -n "$ADMIN_EMAIL" ] && printf 'ADMIN_EMAIL=%s\n' "$ADMIN_EMAIL"
+            [ -n "$ADMIN_PASSWORD" ] && printf 'ADMIN_PASSWORD=%s\n' "$ADMIN_PASSWORD"
+            true
+          } > "$DEPLOY_DIR/.env"
+          chmod 600 "$DEPLOY_DIR/.env"
+
+      - name: Build and start
+        working-directory: ${{ env.DEPLOY_DIR }}
+        run: |
+          docker compose -f docker-compose.prod.yml build
+          docker compose -f docker-compose.prod.yml up -d --remove-orphans
+
+      - name: Wait for health
+        run: |
+          for i in $(seq 1 18); do
+            [ "$(docker inspect --format='{{.State.Health.Status}}' briefklar 2>/dev/null)" = "healthy" ] && { echo healthy; exit 0; }
+            sleep 10
+          done
+          docker logs briefklar --tail=80; exit 1
+
+      - name: Reload Caddy
+        run: docker compose -f /opt/caddy/docker-compose.yml exec caddy caddy reload --config /etc/caddy/Caddyfile
+
+      - name: Clean up dangling images
+        run: docker image prune -f

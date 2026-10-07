@@ -1,0 +1,30 @@
+# Production on the VPS. Shares the host's PostgreSQL (port 5433) and sits behind Caddy in the network "web".
+services:
+  briefklar:
+    build: .
+    container_name: briefklar
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      TZ: Europe/Berlin
+      DATABASE_URL: postgres://briefklar:${DB_PASSWORD}@host.docker.internal:5433/briefklar?sslmode=disable
+      JWT_SECRET: ${JWT_SECRET}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      DEMO_ENABLED: "true"
+      EXPLAINER: openai
+    # OCR temp files live in RAM only, so letter bytes never reach the disk (also not after an OOM kill)
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+    # long requests (upload + OCR + LLM) may take ~2 minutes; the app drains them for up to 110 s on SIGTERM
+    stop_grace_period: 2m
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    mem_limit: 768m
+    networks: [web]
+
+networks:
+  web:
+    external: true
