@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,15 +19,20 @@ import (
 	"github.com/omarfourati-dev/briefklar/internal/explain"
 	"github.com/omarfourati-dev/briefklar/internal/extract"
 	"github.com/omarfourati-dev/briefklar/internal/metrics"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 type fakeExtractor struct {
 	text string
 	err  error
+	kind extract.Kind // default: image
 }
 
 func (f fakeExtractor) Extract(context.Context, []byte) (string, extract.Kind, error) {
-	return f.text, extract.Image, f.err
+	if f.kind == "" {
+		return f.text, extract.Image, f.err
+	}
+	return f.text, f.kind, f.err
 }
 
 type fakeQuota struct{ ok bool }
@@ -95,6 +101,97 @@ func TestPreviewNoText(t *testing.T) {
 	handler(fakeExtractor{text: "x y", err: extract.ErrNoText}, true, nil).Preview(rec, as("user", upload(t, "", "", []byte{0x89, 'P', 'N', 'G'})))
 	if rec.Code != 422 || !strings.Contains(rec.Body.String(), `"recognizedText":"x y"`) {
 		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+}
+
+func TestPreviewNoTextPDFWording(t *testing.T) {
+	rec := httptest.NewRecorder()
+	handler(fakeExtractor{text: "x y", err: extract.ErrNoText, kind: extract.PDF}, true, nil).
+		Preview(rec, as("user", upload(t, "", "", []byte("%PDF-1.4"))))
+	want := "Im PDF ist kaum Text lesbar. Bitte einen schärferen Scan oder ein Foto verwenden."
+	if rec.Code != 422 || !strings.Contains(rec.Body.String(), want) {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	rec = httptest.NewRecorder()
+	handler(fakeExtractor{text: "x y", err: extract.ErrNoText}, true, nil).
+		Preview(rec, as("user", upload(t, "", "", []byte{0x89, 'P', 'N', 'G'})))
+	if !strings.Contains(rec.Body.String(), "Auf dem Bild ist kaum Text lesbar.") {
+		t.Fatalf("image wording changed: %s", rec.Body)
+	}
+}
+
+func TestPreviewImageTooLarge(t *testing.T) {
+	rec := httptest.NewRecorder()
+	h := handler(fakeExtractor{err: extract.ErrImageTooLarge}, true, nil)
+	h.Preview(rec, as("user", upload(t, "", "", []byte{0x89, 'P', 'N', 'G'})))
+	if rec.Code != 413 || !strings.Contains(rec.Body.String(), "Das Bild ist zu groß. Bitte ein kleineres Foto verwenden.") {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	if n := testutil.ToFloat64(h.Metrics.Previews.WithLabelValues("image", "too_large")); n != 1 {
+		t.Fatalf("too_large counter = %v", n)
+	}
+}
+
+// blockingExtractor holds every call until release is closed.
+type blockingExtractor struct{ started, release chan struct{} }
+
+func (b blockingExtractor) Extract(context.Context, []byte) (string, extract.Kind, error) {
+	b.started <- struct{}{}
+	<-b.release
+	return sample, extract.Image, nil
+}
+
+func TestPreviewBusyWhenOCRSlotsAreTaken(t *testing.T) {
+	ex := blockingExtractor{started: make(chan struct{}, 10), release: make(chan struct{})}
+	h := handler(ex, true, nil)
+	h.MaxConcurrentOCR = 2
+	png := []byte{0x89, 'P', 'N', 'G'}
+	var wg sync.WaitGroup
+	codes := make([]int, 2)
+	for i := range codes {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			rec := httptest.NewRecorder()
+			h.Preview(rec, as("user", upload(t, "", "", png)))
+			codes[i] = rec.Code
+		}()
+	}
+	<-ex.started
+	<-ex.started
+
+	rec := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() { h.Preview(rec, as("user", upload(t, "", "", png))); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		close(ex.release)
+		t.Fatal("third upload waited for a slot instead of answering 503")
+	}
+	if rec.Code != 503 || rec.Header().Get("Retry-After") != "5" ||
+		!strings.Contains(rec.Body.String(), "Gerade sind viele Briefe in Arbeit. Bitte in ein paar Sekunden erneut versuchen.") {
+		t.Fatalf("third upload: %d %q %s", rec.Code, rec.Header().Get("Retry-After"), rec.Body)
+	}
+	if n := testutil.ToFloat64(h.Metrics.Previews.WithLabelValues("image", "busy")); n != 1 {
+		t.Fatalf("busy counter = %v", n)
+	}
+	// text input needs no OCR slot
+	rec = httptest.NewRecorder()
+	h.Preview(rec, as("user", upload(t, "text", sample, nil)))
+	if rec.Code != 200 {
+		t.Fatalf("text while busy: %d", rec.Code)
+	}
+
+	close(ex.release)
+	wg.Wait()
+	if codes[0] != 200 || codes[1] != 200 {
+		t.Fatalf("blocked uploads: %v", codes)
+	}
+	rec = httptest.NewRecorder()
+	h.Preview(rec, as("user", upload(t, "", "", png)))
+	if rec.Code != 200 {
+		t.Fatalf("slot not released: %d", rec.Code)
 	}
 }
 

@@ -23,7 +23,7 @@ func New() *Metrics {
 	m := &Metrics{
 		reg: prometheus.NewRegistry(),
 		Previews: prometheus.NewCounterVec(prometheus.CounterOpts{Name: "briefklar_previews_total",
-			Help: "Uploaded letters by input type and outcome (ok, no_text, unsupported, too_large, error)"}, []string{"input", "outcome"}),
+			Help: "Uploaded letters by input type and outcome (ok, no_text, unsupported, too_large, busy, error)"}, []string{"input", "outcome"}),
 		Explanations: prometheus.NewCounterVec(prometheus.CounterOpts{Name: "briefklar_explanations_total",
 			Help: "Explanations by outcome (ok, limit, timeout, error)"}, []string{"outcome"}),
 		OCRDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "briefklar_ocr_duration_seconds",

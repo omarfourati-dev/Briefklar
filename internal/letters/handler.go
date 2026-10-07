@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -22,11 +23,12 @@ import (
 )
 
 const (
-	maxUpload      = 10 << 20
-	minText        = 20
-	maxText        = 20000
-	extractTimeout = 45 * time.Second
-	explainTimeout = 60 * time.Second
+	maxUpload       = 10 << 20
+	minText         = 20
+	maxText         = 20000
+	extractTimeout  = 45 * time.Second
+	explainTimeout  = 60 * time.Second
+	defaultOCRSlots = 2
 )
 
 type Extractor interface {
@@ -44,6 +46,28 @@ type Handler struct {
 	Metrics   *metrics.Metrics
 	Now       func() time.Time
 	Log       *slog.Logger
+	// MaxConcurrentOCR limits parallel text extractions (default 2); further uploads get 503.
+	MaxConcurrentOCR int
+
+	slotsOnce sync.Once
+	slots     chan struct{}
+}
+
+// takeSlot reserves one of the OCR slots without waiting; release must be called when it returns true.
+func (h *Handler) takeSlot() (release func(), ok bool) {
+	h.slotsOnce.Do(func() {
+		n := h.MaxConcurrentOCR
+		if n <= 0 {
+			n = defaultOCRSlots
+		}
+		h.slots = make(chan struct{}, n)
+	})
+	select {
+	case h.slots <- struct{}{}:
+		return func() { <-h.slots }, true
+	default:
+		return nil, false
+	}
 }
 
 // inputLabel keeps the metric label inside the fixed set text/pdf/image/unknown.
@@ -108,21 +132,38 @@ func (h *Handler) Preview(w http.ResponseWriter, r *http.Request) {
 			h.tooLarge(w)
 			return
 		}
+		release, ok := h.takeSlot()
+		if !ok {
+			detected, _ := extract.Detect(data)
+			h.Metrics.Previews.WithLabelValues(inputLabel(detected), "busy").Inc()
+			w.Header().Set("Retry-After", "5")
+			respond.Problem(w, http.StatusServiceUnavailable, "Service Unavailable",
+				"Gerade sind viele Briefe in Arbeit. Bitte in ein paar Sekunden erneut versuchen.")
+			return
+		}
 		ctx, cancel := context.WithTimeout(r.Context(), extractTimeout)
 		start := time.Now()
 		text, kind, err = h.Extractor.Extract(ctx, data)
 		cancel()
+		release()
 		input := inputLabel(kind)
 		h.Metrics.OCRDuration.WithLabelValues(input).Observe(time.Since(start).Seconds())
 		switch {
+		case errors.Is(err, extract.ErrImageTooLarge):
+			h.Metrics.Previews.WithLabelValues(input, "too_large").Inc()
+			respond.Problem(w, http.StatusRequestEntityTooLarge, "Payload Too Large", "Das Bild ist zu groß. Bitte ein kleineres Foto verwenden.")
+			return
 		case errors.Is(err, extract.ErrUnsupported):
 			h.Metrics.Previews.WithLabelValues("unknown", "unsupported").Inc()
 			respond.Problem(w, http.StatusBadRequest, "Bad Request", "Unterstützt werden PDF, JPG, PNG und WebP.")
 			return
 		case errors.Is(err, extract.ErrNoText):
 			h.Metrics.Previews.WithLabelValues(input, "no_text").Inc()
-			respond.ProblemExtra(w, http.StatusUnprocessableEntity, "Kein Text erkannt",
-				"Auf dem Bild ist kaum Text lesbar. Bitte gerade, hell und scharf fotografieren.",
+			detail := "Auf dem Bild ist kaum Text lesbar. Bitte gerade, hell und scharf fotografieren."
+			if kind == extract.PDF {
+				detail = "Im PDF ist kaum Text lesbar. Bitte einen schärferen Scan oder ein Foto verwenden."
+			}
+			respond.ProblemExtra(w, http.StatusUnprocessableEntity, "Kein Text erkannt", detail,
 				map[string]any{"recognizedText": text})
 			return
 		case err != nil:
