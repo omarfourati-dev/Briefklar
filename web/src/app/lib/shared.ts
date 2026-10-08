@@ -22,7 +22,7 @@ export async function takeShared(storage: CacheStorage | undefined = globalThis.
   if (res.headers.get('X-Kind') === 'text') return { kind: 'text', text: await res.text() };
   const type = res.headers.get('Content-Type') ?? '';
   const name = decodeURIComponent(res.headers.get('X-Name') ?? 'geteilt');
-  return { kind: 'file', file: new File([await res.blob()], name, { type }) };
+  return { kind: 'file', file: new File([await res.arrayBuffer()], name, { type }) };
 }
 
 /** Injectable so the letter page can be tested without a real Cache API. */

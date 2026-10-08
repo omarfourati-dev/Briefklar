@@ -20,7 +20,7 @@ const NOW = 1_800_000_000_000;
 
 describe('takeShared', () => {
   it('returns a shared file with name and type and removes it from the cache', async () => {
-    const { storage, store, opened } = fakeCaches(shared('%PDF-1.4', {
+    const { storage, store, opened } = fakeCaches(shared(new TextEncoder().encode('%PDF-1.4'), {
       'Content-Type': 'application/pdf', 'X-Kind': 'file', 'X-Name': encodeURIComponent('Bescheid März.pdf'), 'X-Shared-At': String(NOW - 1000),
     }));
     const got = await takeShared(storage, NOW);
