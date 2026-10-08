@@ -8,8 +8,9 @@ import (
 	"strings"
 )
 
-// Angular puts a content hash into built file names (main-ABCD1234.js) – those never change and may be cached forever.
-var hashed = regexp.MustCompile(`-[A-Z0-9]{8}\.(js|css)$`)
+// Angular puts a content hash into built file names (main-ABCD1234.js, chunk-DOVpZU-H.js) – those never change
+// and may be cached forever.
+var hashed = regexp.MustCompile(`-[A-Za-z0-9_-]{8}\.(js|css)$`)
 
 func staticHandler(files fs.FS) http.Handler {
 	fileServer := http.FileServerFS(files)
@@ -24,6 +25,13 @@ func staticHandler(files fs.FS) http.Handler {
 			w.Header().Set("Cache-Control", "no-cache")
 			http.ServeFileFS(w, r, files, "app/index.html")
 			return
+		case p == "/app/sw.js":
+			// a cached service worker would delay every update
+			w.Header().Set("Cache-Control", "no-cache")
+		case p == "/app/manifest.webmanifest":
+			// not in every mime table (debian-slim has none)
+			w.Header().Set("Content-Type", "application/manifest+json")
+			w.Header().Set("Cache-Control", "no-cache")
 		case hashed.MatchString(p):
 			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 		case p == "/" || strings.HasSuffix(p, ".html"):

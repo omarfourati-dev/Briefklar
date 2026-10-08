@@ -4,7 +4,7 @@ WORKDIR /web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci --no-audit --no-fund
 COPY web/ ./
-RUN npx ng build --configuration production
+RUN npx ng build --configuration production && node scripts/stamp-sw.mjs dist/web/browser
 
 # --- Go binary ---
 FROM golang:1.27-bookworm AS build

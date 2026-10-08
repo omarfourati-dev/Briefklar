@@ -31,10 +31,13 @@ func newServerWith(t *testing.T, p pinger, log *slog.Logger) http.Handler {
 		t.Fatal(err)
 	}
 	files := fstest.MapFS{
-		"index.html":           {Data: []byte("<h1>Landing</h1>")},
-		"robots.txt":           {Data: []byte("User-agent: *")},
-		"app/index.html":       {Data: []byte("<app-root></app-root>")},
-		"app/main-ABCD1234.js": {Data: []byte("console.log(1)")},
+		"index.html":               {Data: []byte("<h1>Landing</h1>")},
+		"robots.txt":               {Data: []byte("User-agent: *")},
+		"app/index.html":           {Data: []byte("<app-root></app-root>")},
+		"app/main-ABCD1234.js":     {Data: []byte("console.log(1)")},
+		"app/chunk-DOVpZU-H.js":    {Data: []byte("console.log(2)")},
+		"app/sw.js":                {Data: []byte("self.addEventListener('fetch', () => {})")},
+		"app/manifest.webmanifest": {Data: []byte(`{"name":"Briefklar"}`)},
 	}
 	return New(Deps{Store: p, Auth: auth.NewService(nil, tok), Metrics: metrics.New(), Static: files, Log: log})
 }
@@ -56,6 +59,7 @@ func TestStaticRoutes(t *testing.T) {
 		{"/app/", "app-root", "no-cache", 200},
 		{"/app/neu", "app-root", "no-cache", 200}, // Angular route, served by index.html
 		{"/app/main-ABCD1234.js", "console", "immutable", 200},
+		{"/app/chunk-DOVpZU-H.js", "console", "immutable", 200}, // newer Angular: mixed case, - and _
 	}
 	for _, c := range cases {
 		rec := get(h, c.path)
@@ -68,6 +72,28 @@ func TestStaticRoutes(t *testing.T) {
 	}
 	if rec := get(h, "/app/missing.js"); rec.Code != 404 {
 		t.Errorf("missing asset: %d", rec.Code)
+	}
+}
+
+// The service worker and the manifest must never be cached by the browser, or updates would hang for days.
+func TestPWAFiles(t *testing.T) {
+	h := newServer(t)
+	sw := get(h, "/app/sw.js")
+	if sw.Code != 200 || sw.Header().Get("Cache-Control") != "no-cache" || !strings.Contains(sw.Header().Get("Content-Type"), "javascript") {
+		t.Errorf("sw.js: %d cache=%q type=%q", sw.Code, sw.Header().Get("Cache-Control"), sw.Header().Get("Content-Type"))
+	}
+	m := get(h, "/app/manifest.webmanifest")
+	if m.Code != 200 || m.Header().Get("Cache-Control") != "no-cache" || m.Header().Get("Content-Type") != "application/manifest+json" {
+		t.Errorf("manifest: %d cache=%q type=%q", m.Code, m.Header().Get("Cache-Control"), m.Header().Get("Content-Type"))
+	}
+}
+
+// Without a service worker (first visit, old browser) a share lands on the server: send the user to the app.
+func TestShareTargetWithoutServiceWorker(t *testing.T) {
+	rec := httptest.NewRecorder()
+	newServer(t).ServeHTTP(rec, httptest.NewRequest("POST", "/app/share-target", strings.NewReader("x")))
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/app/neu" {
+		t.Errorf("share-target: %d %q", rec.Code, rec.Header().Get("Location"))
 	}
 }
 

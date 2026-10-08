@@ -3,6 +3,7 @@ import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { LetterPage } from './letter.page';
 import { EXAMPLES } from '../lib/examples';
+import { Shared, SHARED_INBOX } from '../lib/shared';
 
 describe('LetterPage', () => {
   beforeEach(() => TestBed.configureTestingModule({ providers: [provideHttpClient(), provideHttpClientTesting()] }));
@@ -198,5 +199,39 @@ describe('LetterPage', () => {
     expect(inputs.map((i) => i.getAttribute('capture'))).toEqual(['environment', null]);
     expect(inputs[0].getAttribute('accept')).toBe('image/jpeg,image/png,image/webp');
     expect(inputs[1].getAttribute('accept')).toBe('image/jpeg,image/png,image/webp,application/pdf');
+  });
+
+  describe('shared from another app (Android share target)', () => {
+    async function withShared(shared: Shared | null) {
+      TestBed.overrideProvider(SHARED_INBOX, { useValue: async () => shared });
+      const fixture = TestBed.createComponent(LetterPage);
+      const http = TestBed.inject(HttpTestingController);
+      fixture.detectChanges();
+      await fixture.whenStable();
+      return { fixture, http };
+    }
+
+    it('uploads a shared PDF straight into the preview', async () => {
+      const pdf = new File(['%PDF-1.4'], 'bescheid.pdf', { type: 'application/pdf' });
+      const { http } = await withShared({ kind: 'file', file: pdf });
+      const req = http.expectOne('/api/letters/preview');
+      expect((req.request.body as FormData).get('file')).toBe(pdf);
+    });
+
+    it('previews shared text and keeps it in the text field', async () => {
+      const { fixture, http } = await withShared({ kind: 'text', text: 'Sehr geehrte Frau Muster, bitte zahlen Sie bis 01.12.2026.' });
+      const req = http.expectOne('/api/letters/preview');
+      expect((req.request.body as FormData).get('text')).toBe('Sehr geehrte Frau Muster, bitte zahlen Sie bis 01.12.2026.');
+      req.flush({ text: 'Sehr geehrte Frau [NAME_1] …', findings: [{ placeholder: '[NAME_1]', kind: 'NAME', value: 'Muster' }], inputKind: 'text' });
+      await fixture.whenStable();
+      fixture.detectChanges();
+      expect((fixture.nativeElement as HTMLElement).textContent).toContain('Vorschau: das bekommt die KI');
+    });
+
+    it('does nothing when nothing was shared', async () => {
+      const { http } = await withShared(null);
+      http.expectNone('/api/letters/preview');
+      http.verify();
+    });
   });
 });

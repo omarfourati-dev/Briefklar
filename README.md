@@ -58,6 +58,7 @@ ein Zähler pro Tag (`internal/store/migrations/001_init.sql`).
 | Reactive Forms | `web/src/app/pages/login.page.ts`, `account.page.ts`, `admin.page.ts` |
 | Rechts-nach-links für Arabisch (`dir`, `lang`) | `web/src/app/result/result-view.ts` |
 | Reine Logik getrennt und getestet (Wiedereinsetzen, Schwärzen, .ics, Ampel, Bild-Drehung) | `web/src/app/lib/` |
+| PWA: Manifest, eigener Service Worker, Update-Hinweis, „Teilen → Briefklar“ (Web Share Target) | `web/public/sw.js`, `web/src/app/core/pwa.ts`, `web/src/app/lib/shared.ts` |
 
 ## Lokal entwickeln
 
@@ -77,6 +78,14 @@ cd web && npx playwright test                  # E2E gegen den Stack (E2E_BASE_U
   KI-Client gegen `httptest`, Login/Drosselung/Rollen, Admin-API, Brief-API (u. a. „Brieftext nie im Log“), Server
 - Angular (Vitest): Auth, Guards, Interceptor, Vorschau = gesendeter Text, Ergebnis, Kalender, Ampel, Bild
 - Playwright: Landingpage, Demo mit Arabisch und .ics, Nutzer mit Schwärzung und Erklärung
+
+## App installieren (PWA)
+
+Briefklar lässt sich auf dem Handy installieren („Zum Startbildschirm hinzufügen“). Auf Android erscheint die App
+danach im Teilen-Menü: Foto oder PDF eines Briefs teilen → Briefklar öffnet direkt die Vorschau. Der Service Worker
+speichert nur das App-Gerüst (HTML, JS, CSS, Icons) – **nie** etwas unter `/api`. Ein geteilter Brief liegt nur
+kurz im Browser-Cache und wird beim Öffnen sofort gelöscht. Jeder Deploy erzeugt einen neuen Service Worker
+(`web/scripts/stamp-sw.mjs`), die App bietet dann „Neu laden“ an.
 
 ## Betrieb
 

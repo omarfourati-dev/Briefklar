@@ -1,0 +1,31 @@
+{
+  "id": "/app/",
+  "name": "Briefklar – Behördenbriefe verstehen",
+  "short_name": "Briefklar",
+  "description": "Erklärt deutsche Behördenbriefe in einfacher Sprache – auf Deutsch, Englisch, Französisch und Arabisch.",
+  "lang": "de",
+  "start_url": "/app/",
+  "scope": "/app/",
+  "display": "standalone",
+  "background_color": "#f8fafc",
+  "theme_color": "#4338ca",
+  "categories": ["productivity", "utilities"],
+  "icons": [
+    { "src": "/app/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/app/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/app/icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "share_target": {
+    "action": "/app/share-target",
+    "method": "POST",
+    "enctype": "multipart/form-data",
+    "params": {
+      "title": "title",
+      "text": "text",
+      "url": "url",
+      "files": [
+        { "name": "file", "accept": ["image/jpeg", "image/png", "image/webp", "application/pdf", ".jpg", ".jpeg", ".png", ".webp", ".pdf"] }
+      ]
+    }
+  }
+}

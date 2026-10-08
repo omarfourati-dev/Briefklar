@@ -5,6 +5,7 @@ import { ApiService } from '../core/api.service';
 import { Explanation, Finding, Preview } from '../core/models';
 import { problemMessage } from '../core/problem';
 import { prepareUpload } from '../lib/image';
+import { Shared, SHARED_INBOX } from '../lib/shared';
 import { PLACEHOLDER, PLACEHOLDER_EXACT,redactManually, restoreExplanation } from '../lib/redaction';
 import { ResultView } from '../result/result-view';
 
@@ -93,6 +94,20 @@ export class LetterPage {
   private readonly preview = signal<Preview | null>(null);
   private readonly manual = signal<string[]>([]);
   protected readonly result = signal<Explanation | null>(null);
+
+  constructor() {
+    void this.receiveShared(inject(SHARED_INBOX));
+  }
+
+  /** Android "Share → Briefklar": a photo, PDF or text shared to the app goes straight into the preview. */
+  private async receiveShared(inbox: () => Promise<Shared | null>): Promise<void> {
+    const shared = await inbox();
+    if (shared?.kind === 'file') await this.upload(shared.file);
+    else if (shared?.kind === 'text' && shared.text.trim()) {
+      this.text.set(shared.text);
+      await this.run(this.api.previewText(shared.text));
+    }
+  }
 
   /** Single source of truth: exactly this text (and these findings) is shown and sent. */
   private readonly sent = computed(() => {

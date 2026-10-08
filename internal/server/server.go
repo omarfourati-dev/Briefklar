@@ -15,7 +15,9 @@ import (
 	"github.com/omarfourati-dev/briefklar/internal/users"
 )
 
-type Pinger interface{ Ping(ctx context.Context) error }
+type Pinger interface {
+	Ping(ctx context.Context) error
+}
 
 type Deps struct {
 	Store   Pinger
@@ -60,6 +62,10 @@ func New(d Deps) http.Handler {
 	}
 	mux.HandleFunc("/api/", apiNotFound)
 	mux.HandleFunc("/api", apiNotFound) // without it the mux redirects /api to /api/
+	// Share target without a service worker (first visit, old browser): the shared file is lost, open the app.
+	mux.HandleFunc("POST /app/share-target", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/app/neu", http.StatusSeeOther)
+	})
 	mux.Handle("/", staticHandler(d.Static))
 
 	return securityHeaders(logRequests(d.Log, mux))
