@@ -28,3 +28,6 @@ footer { border-top: 1px solid var(--line); padding: 24px 0; font-size: .9rem; }
 footer .wrap { display: flex; flex-wrap: wrap; gap: 12px; justify-content: space-between; }
 .note { font-size: .85rem; }
 .btn:focus-visible, summary:focus-visible, a:focus-visible { outline: 3px solid var(--brand); outline-offset: 3px; }
+
+/* footer "Datenschutzeinstellungen" looks like the neighbouring links */
+.linklike { padding: 0; border: 0; background: none; color: var(--brand); font: inherit; text-decoration: underline; cursor: pointer; }

@@ -19,6 +19,19 @@ test('landing page explains Briefklar and leads to the demo', async ({ page, req
   expect((await request.get('/metrics')).ok()).toBeTruthy(); // direct; Caddy blocks it in production
 });
 
+test('ads only on the landing page – the app keeps its strict CSP and loads no Google code', async ({ page, request }) => {
+  const landing = await request.get('/');
+  expect(await landing.text()).toContain('pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-');
+  expect(landing.headers()['content-security-policy']).toContain("script-src 'self' 'unsafe-inline' https:");
+  await page.goto('/');
+  await expect(page.getByRole('button', { name: 'Datenschutzeinstellungen' })).toBeVisible();
+
+  const app = await request.get('/app/login');
+  expect(await app.text()).not.toContain('googlesyndication');
+  expect(app.headers()['content-security-policy']).not.toContain('https:');
+  expect(app.headers()['referrer-policy']).toBe('no-referrer');
+});
+
 test('login page shows the demo credentials and the Angular app is styled', async ({ page }) => {
   await page.goto('/app/login');
   await expect(page.getByText('demo@briefklar.app')).toBeVisible();

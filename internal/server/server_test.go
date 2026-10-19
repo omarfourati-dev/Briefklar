@@ -120,17 +120,36 @@ func TestSecurityHeadersAndAPI(t *testing.T) {
 }
 
 func TestSecurityHeaderValues(t *testing.T) {
-	rec := get(newServer(t), "/")
-	want := map[string]string{
-		"Content-Security-Policy": "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; " +
-			"frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
-		"X-Content-Type-Options": "nosniff",
-		"Referrer-Policy":        "no-referrer",
-		"Permissions-Policy":     "camera=(self), microphone=(), geolocation=()",
+	strict := "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; " +
+		"frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+	// the app, its files and the API keep the strict policy – letters never meet third-party code
+	for _, path := range []string{"/app/", "/app/neu", "/app/main-ABCD1234.js", "/api/nope", "/robots.txt"} {
+		rec := get(newServer(t), path)
+		want := map[string]string{
+			"Content-Security-Policy": strict,
+			"X-Content-Type-Options":  "nosniff",
+			"Referrer-Policy":         "no-referrer",
+			"Permissions-Policy":      "camera=(self), microphone=(), geolocation=()",
+		}
+		for k, v := range want {
+			if got := rec.Header().Get(k); got != v {
+				t.Errorf("%s %s = %q, want %q", path, k, got, v)
+			}
+		}
 	}
-	for k, v := range want {
-		if got := rec.Header().Get(k); got != v {
-			t.Errorf("%s = %q, want %q", k, got, v)
+}
+
+func TestLandingPageAllowsAdSense(t *testing.T) {
+	for _, path := range []string{"/", "/index.html"} {
+		rec := get(newServer(t), path)
+		csp := rec.Header().Get("Content-Security-Policy")
+		for _, part := range []string{"script-src 'self' 'unsafe-inline' https:", "frame-src https:", "frame-ancestors 'none'", "base-uri 'self'"} {
+			if !strings.Contains(csp, part) {
+				t.Errorf("%s: CSP %q lacks %q", path, csp, part)
+			}
+		}
+		if got := rec.Header().Get("Referrer-Policy"); got != "strict-origin-when-cross-origin" {
+			t.Errorf("%s: Referrer-Policy = %q", path, got)
 		}
 	}
 }

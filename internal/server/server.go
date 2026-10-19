@@ -71,13 +71,30 @@ func New(d Deps) http.Handler {
 	return securityHeaders(logRequests(d.Log, mux))
 }
 
+// The app, the API and every other path: only our own code, no referrer leaves the site.
+const strictCSP = "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; " +
+	"frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+
+// The public landing page shows Google AdSense (auto ads plus Google's consent message). AdSense loads scripts, frames and
+// pixels from changing Google hosts, so this static page without user data allows HTTPS sources. Letters are only ever
+// handled under /app/, which keeps strictCSP. AdSense needs the page URL as referrer to serve ads for this site.
+const landingCSP = "default-src 'self'; script-src 'self' 'unsafe-inline' https:; img-src 'self' data: blob: https:; " +
+	"frame-src https:; connect-src 'self' https:; style-src 'self' 'unsafe-inline'; " +
+	"frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+
+func isLanding(path string) bool { return path == "/" || path == "/index.html" }
+
 func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
-		h.Set("Content-Security-Policy", "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; "+
-			"frame-ancestors 'none'; base-uri 'self'; form-action 'self'")
+		if isLanding(r.URL.Path) {
+			h.Set("Content-Security-Policy", landingCSP)
+			h.Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		} else {
+			h.Set("Content-Security-Policy", strictCSP)
+			h.Set("Referrer-Policy", "no-referrer")
+		}
 		h.Set("X-Content-Type-Options", "nosniff")
-		h.Set("Referrer-Policy", "no-referrer")
 		h.Set("Permissions-Policy", "camera=(self), microphone=(), geolocation=()")
 		next.ServeHTTP(w, r)
 	})
