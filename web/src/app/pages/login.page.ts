@@ -5,6 +5,7 @@ import { firstValueFrom } from 'rxjs';
 import { ApiService } from '../core/api.service';
 import { AuthStore } from '../core/auth.store';
 import { problemMessage } from '../core/problem';
+import { siteHome } from '../core/site';
 
 const DEMO = { email: 'demo@briefklar.app', password: 'demo-briefklar' };
 
@@ -13,7 +14,7 @@ const DEMO = { email: 'demo@briefklar.app', password: 'demo-briefklar' };
   imports: [ReactiveFormsModule],
   template: `
     <div class="mx-auto mt-16 max-w-sm px-4">
-      <a href="/" class="text-xl font-bold text-slate-900">Briefklar</a>
+      <a [href]="home" class="text-xl font-bold text-slate-900">Briefklar</a>
       <form class="card mt-6 space-y-4 p-6" [formGroup]="form" (ngSubmit)="submit()">
         <h1 class="text-lg font-semibold">Anmelden</h1>
         <div><label class="label" for="email">E-Mail</label><input id="email" class="input" type="email" formControlName="email" autocomplete="username" /></div>
@@ -36,6 +37,8 @@ export class LoginPage implements OnInit {
   private readonly api = inject(ApiService);
   private readonly auth = inject(AuthStore);
   private readonly router = inject(Router);
+  /** The landing page – on the site, not on the app origin. */
+  protected readonly home = siteHome();
   protected readonly busy = signal(false);
   protected readonly error = signal('');
   protected readonly form = inject(FormBuilder).nonNullable.group({

@@ -27,6 +27,9 @@ type Deps struct {
 	Metrics *metrics.Metrics
 	Static  fs.FS
 	Log     *slog.Logger
+
+	// AppOrigin (APP_ORIGIN) puts the app on its own origin, away from the ads of the landing page; "" = one origin.
+	AppOrigin string
 }
 
 func New(d Deps) http.Handler {
@@ -68,7 +71,8 @@ func New(d Deps) http.Handler {
 	})
 	mux.Handle("/", staticHandler(d.Static))
 
-	return securityHeaders(logRequests(d.Log, mux))
+	o := newOrigins(d.AppOrigin)
+	return securityHeaders(o, logRequests(d.Log, o.routeHosts(mux)))
 }
 
 // The app, the API and every other path: only our own code, no referrer leaves the site.
@@ -84,10 +88,10 @@ const landingCSP = "default-src 'self'; script-src 'self' 'unsafe-inline' https:
 
 func isLanding(path string) bool { return path == "/" || path == "/index.html" }
 
-func securityHeaders(next http.Handler) http.Handler {
+func securityHeaders(o origins, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
-		if isLanding(r.URL.Path) {
+		if isLanding(r.URL.Path) && !o.isApp(r) {
 			h.Set("Content-Security-Policy", landingCSP)
 			h.Set("Referrer-Policy", "strict-origin-when-cross-origin")
 		} else {

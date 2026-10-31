@@ -25,4 +25,6 @@ services:
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-local-admin-password-123}
       DEMO_ENABLED: "true"
       EXPLAINER: ${EXPLAINER:-fake}
+      # the app on its own origin like in production (browsers resolve *.localhost themselves); empty = one origin
+      APP_ORIGIN: ${APP_ORIGIN-http://app.localhost:8080}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-not-configured}
