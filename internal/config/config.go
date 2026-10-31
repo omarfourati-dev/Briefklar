@@ -4,7 +4,9 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"strconv"
+	"strings"
 )
 
 type Config struct {
@@ -19,6 +21,7 @@ type Config struct {
 	OpenAIBaseURL string
 	OpenAIModel   string
 	DailyLimit    int
+	AppOrigin     string // e.g. https://app.briefklar.omarfourati.de – the app away from the ads; "" = one origin
 }
 
 // Load takes getenv as a parameter so tests can pass a map instead of touching the process environment.
@@ -46,6 +49,10 @@ func Load(getenv func(string) string) (Config, error) {
 		return Config{}, fmt.Errorf("DAILY_LIMIT must be a non-negative number")
 	}
 	c.DailyLimit = limit
+	c.AppOrigin = strings.TrimSuffix(getenv("APP_ORIGIN"), "/")
+	if c.AppOrigin != "" && !isOrigin(c.AppOrigin) {
+		return Config{}, errors.New("APP_ORIGIN must be an origin like https://app.example.com (no path, no query)")
+	}
 	switch {
 	case c.DatabaseURL == "":
 		return Config{}, errors.New("DATABASE_URL is required")
@@ -57,4 +64,10 @@ func Load(getenv func(string) string) (Config, error) {
 		return Config{}, errors.New(`OPENAI_API_KEY is required when EXPLAINER is "openai" (use EXPLAINER=fake without a key)`)
 	}
 	return c, nil
+}
+
+func isOrigin(s string) bool {
+	u, err := url.Parse(s)
+	return err == nil && (u.Scheme == "https" || u.Scheme == "http") && u.Host != "" && u.Path == "" &&
+		u.RawQuery == "" && u.Fragment == "" && u.User == nil
 }

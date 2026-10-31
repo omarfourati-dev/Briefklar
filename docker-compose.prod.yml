@@ -16,6 +16,8 @@ services:
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
       DEMO_ENABLED: "true"
       EXPLAINER: openai
+      # the app away from the AdSense scripts of the landing page (DNS app.briefklar + Caddy block must exist)
+      APP_ORIGIN: https://app.briefklar.omarfourati.de
     # OCR temp files live in RAM only, so letter bytes never reach the disk (also not after an OOM kill)
     tmpfs:
       - /tmp:size=128m,mode=1777

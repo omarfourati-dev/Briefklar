@@ -99,7 +99,7 @@ func run(log *slog.Logger) error {
 	} else if n > 0 {
 		log.Info("removed stale temp directories", "removed", n)
 	}
-	log.Info("starting", "addr", cfg.Addr, "explainer", cfg.Explainer, "demo", cfg.DemoEnabled)
+	log.Info("starting", "addr", cfg.Addr, "explainer", cfg.Explainer, "demo", cfg.DemoEnabled, "appOrigin", cfg.AppOrigin)
 
 	files, err := fs.Sub(static.Files, "dist")
 	if err != nil {
@@ -113,6 +113,9 @@ func run(log *slog.Logger) error {
 		Metrics: m,
 		Static:  files,
 		Log:     log,
+
+		// the app on its own origin, away from the AdSense scripts of the landing page
+		AppOrigin: cfg.AppOrigin,
 	})
 	srv := &http.Server{Addr: cfg.Addr, Handler: handler, ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout: 2 * time.Minute, WriteTimeout: 3 * time.Minute, IdleTimeout: 2 * time.Minute}

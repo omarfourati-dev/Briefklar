@@ -5,7 +5,7 @@ Sprache auf Deutsch, Englisch, Französisch und Arabisch: was die Behörde will,
 als Kalendereintrag und ein Antwort-Entwurf. **Persönliche Daten werden auf dem Server geschwärzt, bevor die KI den
 Text sieht. Briefe werden nicht gespeichert.**
 
-**Live:** https://briefklar.omarfourati.de · Demo-Zugang auf der Anmeldeseite (`demo@briefklar.app` / `demo-briefklar`,
+**Live:** https://briefklar.omarfourati.de (App: https://app.briefklar.omarfourati.de) · Demo-Zugang auf der Anmeldeseite (`demo@briefklar.app` / `demo-briefklar`,
 nur Beispielbriefe) · Keine Rechtsberatung.
 
 Ein Portfolio-Projekt von [Omar Fourati](https://omarfourati.de), gebaut mit **Go** und **Angular**.
@@ -68,7 +68,8 @@ Kein lokales Go nötig – Go läuft im Container (`dev.Dockerfile`, mit Tessera
 scripts/go.sh test ./...                       # Backend-Tests (startet Postgres per testcontainers)
 docker compose up -d postgres                  # nur die Datenbank
 cd web && npm ci && npx ng serve               # Angular auf :4200, /api → :8080
-JWT_SECRET=$(openssl rand -hex 32) docker compose --profile app up --build   # alles, KI im Testmodus (EXPLAINER=fake)
+JWT_SECRET=$(openssl rand -hex 32) docker compose --profile app up --build   # alles, KI im Testmodus (EXPLAINER=fake);
+                                               # Startseite http://localhost:8080, App http://app.localhost:8080/app/
 cd web && npx playwright test                  # E2E gegen den Stack (E2E_BASE_URL, Standard :8080)
 ```
 
@@ -92,3 +93,30 @@ kurz im Browser-Cache und wird beim Öffnen sofort gelöscht. Jeder Deploy erzeu
 GitHub Actions (`.github/workflows/`): Tests auf GitHub-Runnern, danach Deploy auf myvps (Self-hosted-Runner),
 Docker Compose (`docker-compose.prod.yml`, tmpfs für `/tmp`), Caddy mit HTTPS, Kennzahlen unter `/metrics` nur im
 Docker-Netz (Prometheus/Grafana mit Alarmen).
+
+**Zwei Ursprünge (`APP_ORIGIN`):** Auf der Startseite `briefklar.omarfourati.de` läuft Google AdSense. Damit dessen
+Skripte die Sitzung der App weder lesen noch eine fremde unterschieben können (`sessionStorage` gilt je Ursprung),
+läuft die App auf `https://app.briefklar.omarfourati.de`:
+
+| Host | liefert |
+|---|---|
+| `briefklar.omarfourati.de` | Startseite mit Werbung, `llms.txt`, `robots.txt`; `/app/…` → 301 auf `app.` (POST → 308); `/api/…` → 404 (keine Anmeldung neben der Werbung) |
+| `app.briefklar.omarfourati.de` | App unter `/app/` und API, immer die strenge CSP; `/` → `/app/`; `robots.txt` sperrt alles; Startseiten-Dateien → 302 auf die Startseite |
+
+`/healthz` und `/metrics` antworten auf jedem Host (Docker-Healthcheck, Prometheus über `briefklar:8080`). Die
+Startseite lädt vor AdSense `forget-session.js`, das eine Sitzung aus der Zeit vor dem Umzug aus dem Tab löscht.
+Ohne `APP_ORIGIN` bleibt alles auf einem Ursprung (lokale Entwicklung mit `ng serve`). Caddy auf myvps braucht für
+die App einen eigenen Block (DNS: A-Eintrag `app.briefklar` → Server):
+
+```caddyfile
+app.briefklar.omarfourati.de {
+    import access_log app.briefklar.omarfourati.de
+    # Prometheus-Kennzahlen nur im Docker-Netz web
+    respond /metrics 404
+    request_body {
+        max_size 11MB
+    }
+    encode zstd gzip
+    reverse_proxy briefklar:8080
+}
+```

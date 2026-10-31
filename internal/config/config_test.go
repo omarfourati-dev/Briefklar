@@ -56,3 +56,25 @@ func TestOverrides(t *testing.T) {
 		t.Fatalf("overrides ignored: %+v", c)
 	}
 }
+
+func TestAppOrigin(t *testing.T) {
+	base := func(origin string) map[string]string {
+		return map[string]string{"DATABASE_URL": "postgres://x", "JWT_SECRET": strings.Repeat("s", 32), "EXPLAINER": "fake",
+			"APP_ORIGIN": origin}
+	}
+	for _, ok := range []string{"", "https://app.briefklar.omarfourati.de", "http://app.localhost:8080", "https://app.briefklar.omarfourati.de/"} {
+		c, err := Load(env(base(ok)))
+		if err != nil {
+			t.Errorf("%q: %v", ok, err)
+			continue
+		}
+		if want := strings.TrimSuffix(ok, "/"); c.AppOrigin != want {
+			t.Errorf("%q: AppOrigin %q, want %q", ok, c.AppOrigin, want)
+		}
+	}
+	for _, bad := range []string{"app.briefklar.omarfourati.de", "ftp://app.x.de", "https://", "https://app.x.de/app", "https://app.x.de?x=1"} {
+		if _, err := Load(env(base(bad))); err == nil {
+			t.Errorf("%q: expected error", bad)
+		}
+	}
+}

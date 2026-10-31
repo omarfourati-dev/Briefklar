@@ -3,6 +3,12 @@ import { APIRequestContext, expect, Page, test } from '@playwright/test';
 const ADMIN_EMAIL = process.env['E2E_ADMIN_EMAIL'] ?? 'admin@briefklar.test';
 const ADMIN_PASSWORD = process.env['E2E_ADMIN_PASSWORD'] ?? 'local-admin-password-123';
 const run = Date.now().toString(36);
+// The app runs on its own origin app.<site> (APP_ORIGIN), away from the AdSense scripts of the landing page.
+// Chromium resolves *.localhost itself; Node may not, so API calls from the test go to BASE with the app's Host header.
+const BASE = process.env['E2E_BASE_URL'] ?? 'http://localhost:8080';
+const APP_HOST = `app.${new URL(BASE).host}`;
+const APP = `${new URL(BASE).protocol}//${APP_HOST}`;
+const ON_APP = { headers: { host: APP_HOST } };
 const DISCLAIMER = 'Keine Rechtsberatung. Im Zweifel bei der Behörde nachfragen.';
 
 test('landing page explains Briefklar and leads to the demo', async ({ page, request }) => {
@@ -26,14 +32,40 @@ test('ads only on the landing page – the app keeps its strict CSP and loads no
   await page.goto('/');
   await expect(page.getByRole('button', { name: 'Datenschutzeinstellungen' })).toBeVisible();
 
-  const app = await request.get('/app/login');
+  const app = await request.get(`${BASE}/app/login`, ON_APP);
   expect(await app.text()).not.toContain('googlesyndication');
   expect(app.headers()['content-security-policy']).not.toContain('https:');
   expect(app.headers()['referrer-policy']).toBe('no-referrer');
 });
 
+test('the app runs on its own origin – no login and no session on the page with ads', async ({ page, request }) => {
+  const moved = await request.get(`${BASE}/app/neu?x=1`, { maxRedirects: 0 });
+  expect(moved.status()).toBe(301);
+  expect(moved.headers()['location']).toBe(`${APP}/app/neu?x=1`);
+  expect((await request.post(`${BASE}/api/auth/login`, { data: { email: ADMIN_EMAIL, password: ADMIN_PASSWORD } })).status()).toBe(404);
+  const appRoot = await request.get(`${BASE}/`, { ...ON_APP, maxRedirects: 0 });
+  expect(appRoot.status()).toBe(302);
+  expect(appRoot.headers()['content-security-policy']).not.toContain('https:'); // never the AdSense CSP on the app
+
+  // logged in on the app, then back to the landing page in the same tab: the session is not there
+  await page.goto('/app/login');
+  await page.getByRole('button', { name: 'Als Demo anmelden' }).click();
+  await expect(page.getByRole('heading', { name: 'Beispielbriefe' })).toBeVisible();
+  expect(await page.evaluate(() => sessionStorage.getItem('briefklar.session'))).toContain('token');
+  await page.goto(`${BASE}/`);
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('Was will das Amt');
+  expect(await page.evaluate(() => [sessionStorage.getItem('briefklar.session'), localStorage.getItem('briefklar.session')]))
+    .toEqual([null, null]);
+  // an app session left on the site from before the move is dropped before the ads load
+  await page.evaluate(() => sessionStorage.setItem('briefklar.session', '{"token":"alt"}'));
+  await page.reload();
+  expect(await page.evaluate(() => sessionStorage.getItem('briefklar.session'))).toBeNull();
+});
+
 test('login page shows the demo credentials and the Angular app is styled', async ({ page }) => {
   await page.goto('/app/login');
+  await expect(page).toHaveURL(`${APP}/app/login`); // the site sends the app to its own origin
+  await expect(page.getByRole('link', { name: 'Briefklar' })).toHaveAttribute('href', `${BASE}/`); // home = the site
   await expect(page.getByText('demo@briefklar.app')).toBeVisible();
   await expect(page.getByText('demo-briefklar')).toBeVisible();
   // CSP forbids inline handlers (inlineCritical=false): the stylesheet must really be applied
@@ -64,10 +96,10 @@ test('demo sees examples, switches to Arabic and downloads the deadline', async 
 
 /** Creates a fresh user through the admin API and logs in through the UI. */
 async function loginAsNewUser(page: Page, request: APIRequestContext, tag: string): Promise<void> {
-  const login = await request.post('/api/auth/login', { data: { email: ADMIN_EMAIL, password: ADMIN_PASSWORD } });
+  const login = await request.post(`${BASE}/api/auth/login`, { ...ON_APP, data: { email: ADMIN_EMAIL, password: ADMIN_PASSWORD } });
   const token = (await login.json()).token as string;
   const user = { email: `${tag}.${run}@e2e.test`, name: 'Nutzer E2E', password: 'e2e-test-passwort-1', role: 'user', dailyLimit: 5 };
-  expect((await request.post('/api/users', { headers: { Authorization: `Bearer ${token}` }, data: user })).status()).toBe(201);
+  expect((await request.post(`${BASE}/api/users`, { headers: { ...ON_APP.headers, Authorization: `Bearer ${token}` }, data: user })).status()).toBe(201);
   await page.goto('/app/login');
   await page.getByLabel('E-Mail').fill(user.email);
   await page.getByLabel('Passwort').fill(user.password);
@@ -99,11 +131,14 @@ function pdfWithText(lines: string[]): number[] {
 }
 
 test('the app is installable and never caches API responses', async ({ page, request }) => {
-  const manifest = await (await request.get('/app/manifest.webmanifest')).json();
+  const manifest = await (await request.get(`${BASE}/app/manifest.webmanifest`, ON_APP)).json();
   expect(manifest).toMatchObject({ short_name: 'Briefklar', start_url: '/app/', scope: '/app/', display: 'standalone' });
   expect(manifest.share_target.action).toBe('/app/share-target');
-  for (const icon of manifest.icons as { src: string }[]) expect((await request.get(icon.src)).ok()).toBeTruthy();
-  const sw = await request.get('/app/sw.js');
+  for (const icon of manifest.icons as { src: string }[]) {
+    const path = new URL(icon.src, `${APP}/app/manifest.webmanifest`).pathname;
+    expect((await request.get(`${BASE}${path}`, ON_APP)).ok()).toBeTruthy();
+  }
+  const sw = await request.get(`${BASE}/app/sw.js`, ON_APP);
   expect(sw.headers()['cache-control']).toBe('no-cache');
   expect(await sw.text()).not.toContain('__BUILD__'); // stamped by the Docker build: every deploy is an update
 
